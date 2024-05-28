@@ -1,21 +1,23 @@
 "use server"
+import { glob, globSync, globStream, globStreamSync, Glob } from 'glob'
+import { readFileSync, lstatSync, existsSync } from "fs"
 
-
-export const readFileFromLocal = (path: string) => {
-    const { readFileSync, lstatSync } = require("fs");
-		try {
-			if(lstatSync(path).isFile()){
-				const file = readFileSync(
-					path,
-					"utf8"
-				);
-				console.log(file)
-				return file
-			}
-		} catch (error) {
-			console.log(error)
+export const readFileFromLocal = async (path: string): Promise<string | null> => {
+		let file: string = ""
+		if(existsSync(path) && lstatSync(path).isFile()){
+			file = path
+		} else if (globSync(path+".*")){
+			file = globSync(path+".*")[0]
 		}
-    return 
+		if(existsSync(file) && lstatSync(file).isFile()){
+			const content = readFileSync(
+				file,
+				"utf8"
+			);
+			return content
+		}
+		
+    return null
 }
 
 export const getFileFromLocal = (path: string) => {

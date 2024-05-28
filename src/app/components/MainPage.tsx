@@ -8,9 +8,6 @@ import React, {useEffect, useState} from "react";
 import { readFileFromLocal } from "../actions/get_file_from_local";
 import dataDependencyTracker from "../server/utils/data_dependency_tracker";
 
-import { getVariablesOnFile } from '../server/utils/data_dependency_tracker';
-import EventsTable from "./EventTable";
-
 
 const codeFile = `function nestedFunctionTest(tracked_nested){
 	// this function will receive the tracked_variable.testFieldsSubObject and access its variables directly
@@ -50,7 +47,6 @@ function trackedInsideFunction() {
 	const test_in_scope_name_change = tracked_variable.testFieldInScopeChange
 }
 `;
-
 const codeFile2 = `
 function nestedFunctionTest(tracked_nested){
 	// this function will receive the tracked_variable.testFieldsSubObject and access its variables directly
@@ -220,11 +216,13 @@ const MainPage: React.FC = () => {
 
 	
 	const [folder, setFolder ] = useState('')
-	const [file, setFile] = useState("/Users/vdemedeirosbrown/code/code_scrapper/code-scrapper/src/tests/code_file_1.tsx")
+	const single_file = "/Users/vdemedeirosbrown/code/code_scrapper/code-scrapper/src/tests/single_file_test_1.tsx"
+	const import_file = "/Users/vdemedeirosbrown/code/code_scrapper/code-scrapper/src/tests/import_file_test_1.tsx"
+	const [file, setFile] = useState(import_file)
 	const [code, setCode] = useState('')
 
-	const processOnFrontEnd = (code: string) => {
-		const data = dataDependencyTracker(code)
+	const processOnFrontEnd = async (code: string) => {
+		const data = await dataDependencyTracker(code, file)
 		console.log(data)
 		setTrackedVariables(data)
 	}
@@ -251,7 +249,7 @@ const MainPage: React.FC = () => {
 				</TabsContent>
 				<TabsContent value="Fragments">
 					<div>
-						{trackedVariables.map(({fragment, name}) => 
+						{trackedVariables?.map(({fragment, name}) => 
 								<Textarea rows={19} key={name} value={fragment.mergedValue} readOnly />
 						)}
 					</div>

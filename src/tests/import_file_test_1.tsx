@@ -1,17 +1,10 @@
 import { Component } from "react";
 import { Fragment } from "react/jsx-runtime";
-import { nestedFunctionTest } from "./nested_function";
+import { outerFunction as outerFunction2 } from "./import_file_test_2";
 
 
 
-function outerFunction2(tracked_two: { testFieldsString: any; testFieldsSubObject: any; testFieldsNumber?: number; unusedVariable?: boolean; testClassSentObj?: { testClassSubFieldString: string; testClassSubFieldBoolean: boolean; testClassSubFieldObject: { testClassGrandChildString: string } }; unusedTestVar?: string; JSXChildrenTest?: string }){
-	// this function on top of normal accesses will call the nestedFunctionTest to
-	// check if those variables are being tracked and references back.
-	const usage1 = tracked_two.testFieldsString
-	const usage2 = tracked_two.testFieldsSubObject.testSubFieldNull
-	const usage3 = nestedFunctionTest(tracked_two.testFieldsSubObject)
-	return null
-}
+
 function outerFunction1(tracked_one: { testFieldsString: any; testFieldsSubObject?: { testSubFieldNull: null; testSubFieldString: string; testSubFieldNumber: number; testSubFieldObject: { testGrandChildString: string } }; testFieldsNumber: any; unusedVariable?: boolean; testClassSentObj?: { testClassSubFieldString: string; testClassSubFieldBoolean: boolean; testClassSubFieldObject: { testClassGrandChildString: string } }; unusedTestVar?: string; JSXChildrenTest?: string }){
 	const usage1 = tracked_one.testFieldsNumber + 1
 	const usage2 = tracked_one.testFieldsString
@@ -83,3 +76,4 @@ export function trackedInsideFunction() {
 		<GenericReactClassComponent class_tracked_variable={tracked_variable.testClassSentObj}>{tracked_variable.JSXChildrenTest}</GenericReactClassComponent>
 	)
 }
+

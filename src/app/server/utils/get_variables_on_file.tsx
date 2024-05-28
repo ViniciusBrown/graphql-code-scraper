@@ -8,7 +8,7 @@ const GITHUB_API_URL = "https://api.github.com";
 //   const config = {
 //     headers: {
 //       Accept: "application/vnd.github.raw+json",
-//       Authorization: "Bearer " + gitHubApiToken,
+//       Authorization: "Bearer " + GITHUB_API_TOKEN,
 //       "X-GitHub-Api-Version": "2022-11-28",
 //     },
 //   };

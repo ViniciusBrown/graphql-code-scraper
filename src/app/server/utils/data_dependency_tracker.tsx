@@ -1,14 +1,23 @@
+"use server"
+
 import { parse } from "@babel/parser";
 import traverse, { Node, NodePath as NodePath, Scope } from "@babel/traverse";
 import {
+  File,
   Identifier,
+  Import,
+  ImportDeclaration,
+  importDeclaration,
   JSXOpeningElement,
   ObjectPattern,
   ObjectProperty,
+  Program,
   ThisExpression,
 } from "@babel/types";
+import { glob, globSync, globStream, globStreamSync, Glob } from 'glob'
+import { readFileSync, lstatSync, existsSync } from "fs"
 
-export type EventType = {
+type EventType = {
   type: string;
   from_var: string;
   to_var: null | string;
@@ -19,7 +28,7 @@ export type EventType = {
   id?: string;
 };
 
-export type FragmentType = {
+type FragmentType = {
   name: string;
   contentObj: { [key: string]: any };
   value: string;
@@ -87,7 +96,7 @@ class SubField {
   }
 }
 
-export class ASTNode {
+class ASTNode {
   // main properties
   path: NodePath;
   uid: number;
@@ -241,7 +250,7 @@ export class ASTNode {
           //   this.mapInScopeChanges(memberExpressionStringArray, declarator.parentPath, originName);
           // }
         }
-        console.log(memberExpressionStringArray);
+        //console.log(memberExpressionStringArray);
       });
       this.didEventBus = true;
       this.mergedEventBus = this.eventBus.slice();
@@ -556,22 +565,24 @@ export class ASTNode {
   }
 }
 
-export class ASTScope {
+class ASTScope {
   scope: Scope;
   ASTNode: ASTNode | null;
   path: NodePath;
   uid: number;
   name: string;
+  aliasName: string;
   type: string;
   parent: ASTScope | null;
   ScopeReferencesAndAssignments: {
     references: { [key: string]: NodePath[] };
     assignments: { [key: string]: NodePath };
   };
-  scopeAfterProgram: ASTScope | null; // this variable hold a reference to the scope at the most top level, only bellow the program itself (useful to locate component scope)
+  scopeAfterProgram: ASTScope | null | undefined; // this variable hold a reference to the scope at the most top level, only bellow the program itself (useful to locate component scope)
   ASTNodes: { [name: string]: ASTNode };
-  childScopes: { [name: string]: ASTScope };
+  childScopes: ASTScope[];
   trackedVars: string[];
+  imports: {[name: string]: {realName: string, localName: string, ASTScope: ASTScope | null, codeImportedSuccess: boolean}}
 
   constructor(scope: Scope, uid: number, parent: ASTScope | null = null) {
     this.scope = scope;
@@ -588,11 +599,13 @@ export class ASTScope {
       this.name = this.path.node?.id?.name;
     }
     this.name = this.name || "Program";
+    this.aliasName = this.name
     this.type = this.path.type;
+    this.imports = {}
     this.trackedVars = [];
     this.uid = uid;
     this.parent = parent;
-    this.childScopes = {};
+    this.childScopes = [];
     this.ASTNode = this.parent?.getASTNodeBinding(this.name) || null;
 
     this.ASTNodes = {};
@@ -600,7 +613,7 @@ export class ASTScope {
     this.scope.setData("ASTScope", this);
     this.scope.setData("name", this.name);
 
-    if (this.parent) this.parent.childScopes[this.name] = this;
+    if (this.parent) this.parent.childScopes.push(this);
 
     this.ScopeReferencesAndAssignments = {
       references: {},
@@ -697,14 +710,42 @@ export class ASTScope {
     let astScope: ASTScope | null = null;
     let currentScope: ASTScope | null = this;
     while (currentScope !== null && astScope === null) {
-      currentScope && currentScope.childScopes[scopeName]
-        ? (astScope = currentScope.childScopes[scopeName])
-        : (currentScope = currentScope?.parent || null);
+      currentScope && currentScope.childScopes.find(scope => scope.name === scopeName)
+        ? (astScope = currentScope.childScopes.find(scope => scope.name === scopeName))
+        : (currentScope = currentScope?.parent || currentScope || null);
+      if (astScope === null && currentScope){
+        Object.values(currentScope.imports).forEach(imported => {
+          if(imported.localName === scopeName){
+            astScope = imported.ASTScope
+          }
+        })
+      }
     }
-    // import changes here
+    // import changes
+    
     return astScope;
   }
+  bindImportToLocalCode(imported: typeof this.imports['value']){
+    // if(this.type === 'Program'){
+    //   this.childScopes.forEach(scope => {
+    //     if(scope.type === 'Program') {
+    //       imported.ASTScope = scope.getASTScope(key) || null
+    //       if(imported.ASTScope){
+    //         this.childScopes.push(imported.ASTScope)
+    //       }
+          
+    //     }
+    //   })
+    // }
+    // if(imported.ASTScope){
+    //   this.childScopes.push(imported.ASTScope)
+    // } 
+    
+  }
   processReferences() {
+    // Object.keys(this.imports).forEach(imported => {
+    //   this.bindImportToLocalCode(this.imports[imported])
+    // })
     Object.entries(this.scope.bindings).forEach(([name, bind]) => {
       this.ScopeReferencesAndAssignments.assignments[name] = bind.path;
       this.ScopeReferencesAndAssignments.references[name] = this.ScopeReferencesAndAssignments
@@ -762,7 +803,168 @@ export class ASTScope {
   }
 }
 
-export default function dataDependencyTracker(codeToParseInput?: string): ASTNode[] {
+const processImportPath = (importPath: string, nodePath?: string) => {
+  const paths = importPath.split("/")
+  if (paths[0] === '.' && nodePath){
+    const newPath = nodePath.split("/")
+    newPath.pop()
+    paths.shift()
+    return [...newPath, paths].join("/")
+  } else if (paths[0] === '@'){
+    return importPath
+  }
+  return importPath
+}
+
+const processImports = (ast: File) => {
+  const processImportPath = (importPath: string, nodePath?: string) => {
+    const paths = importPath.split("/")
+    if (paths[0] === '.' && nodePath){
+      const newPath = nodePath.split("/")
+      newPath.pop()
+      paths.shift()
+      return [...newPath, paths].join("/")
+    } else if (paths[0] === '@'){
+      return importPath
+    }
+    return importPath
+  }
+  const files: {[key: string]: string} = {}
+  function recursiveGetASTs(ast: Program){
+    const imports: {[key: string]: {name: string, path: string, content?: Node}} = {}
+    const exports: {[key: string]: {name: null | string, path: string, content?: Node}} = {}
+    const others: {[key: string]: {name: null | string, path: string, content?: Node}} = {}
+    if(ast){
+      ast.body.forEach(path => {
+        if (path.type === 'ImportDeclaration') {
+          const importPath = processImportPath(path.source.value, path.loc?.filename)
+          
+          path.specifiers.forEach((imported) => {
+            if (imported.type === 'ImportDefaultSpecifier'){
+              imports[imported.local.name] = {name: imported.local.name, path: importPath}
+            } else if (imported.type === 'ImportSpecifier') {
+              imports[imported.imported.type === 'Identifier' 
+              ? imported.imported.name 
+              : imported.imported.value] = {
+                name: imported.local.name, 
+                path: importPath
+              }
+            }
+          })
+        }
+        else if(path.type === 'ExportNamedDeclaration'){
+          if(path.declaration){
+            if(path.declaration.id && path.declaration.id.name){
+              exports[path.declaration.id.name] = {
+                name: path.declaration.id.name,
+                path: '',
+                content: path.declaration
+              }
+            }
+          } else if (path.specifiers.length > 0){
+            path.specifiers.forEach(exported => {
+              exports[exported.exported.type === 'Identifier' ? exported.exported.name : exported.exported.value] = {
+                name: exported.local.name,
+                path: '',
+                content: ast.body.find(node => 'id' in node && node.id && 'name' in node.id && node.id.name === exported.local.name)
+              }
+            })
+          }
+        }
+        else if(path.type === 'ExportDefaultDeclaration'){
+          if(path.declaration){
+            if(path.declaration.type === 'Identifier'){
+              exports['default'] = {
+                name: path.declaration.name,
+                path: '',
+                content: ast.body.find(node => 'id' in node && node.id && 'name' in node.id && node.id.name === path.declaration.name)
+              }
+            } else if ('id' in path.declaration && path.declaration.id && path.declaration.id.type === 'Identifier') {
+              exports['default'] = {
+                name: path.declaration.id.name,
+                path: '',
+                content: path.declaration
+              }
+            } else {
+              exports['default'] = {
+                name: null,
+                path: '',
+                content: path.declaration
+              }
+            }
+          }
+        }
+        else if(path.type === 'ClassDeclaration' || path.type === 'FunctionDeclaration'){
+          if(path.id?.name){
+            exports[path.id.name] = {
+              name: path.id.name,
+              path: '',
+              content: path
+            }
+          }
+        }
+      })
+      
+    }
+    console.log('imports')
+    console.log(imports)
+    console.log('exports')
+    console.log(exports)
+    Object.keys(imports).forEach(key => {
+      const imported = imports[key]
+      const newImportPath = imported.path
+      readFileFromLocal(newImportPath).then(code => {
+        if(code){
+          const ast = parse(code, {
+            sourceType: "module",
+            sourceFilename: newImportPath,
+            plugins: [
+              // enable jsx and flow syntax
+              "jsx",
+              "flow",
+            ],
+          });
+          if(ast){
+            const importedVars = recursiveGetASTs(ast.program)
+            Object.keys(importedVars).forEach(declaration => {
+              if(imports[declaration]){
+                imports[declaration].content = importedVars[declaration].content
+              } else if(importedVars[declaration].name){
+                imports[declaration] = {...importedVars[declaration], path: newImportPath}
+              }
+            })
+          }
+        }
+      })
+    })
+    return exports
+  }
+  console.log('got here')
+  recursiveGetASTs(ast.program)
+
+}
+
+
+const readFileFromLocal = (path: string): string | null => {
+  let file: string = ""
+  if(existsSync(path) && lstatSync(path).isFile()){
+    file = path
+  } else if (globSync(path+".*")){
+    file = globSync(path+".*")[0]
+  }
+  if(existsSync(file) && lstatSync(file).isFile()){
+    const content = readFileSync(
+      file,
+      "utf8"
+    );
+    return content
+  }
+  
+  return null
+}
+
+
+export default async function dataDependencyTracker(codeToParseInput?: string, filePath?: string): ASTNode[] {
   const allASTNodes: ASTNode[] = [];
   console.log("working");
   let codeToParse: string;
@@ -774,13 +976,15 @@ export default function dataDependencyTracker(codeToParseInput?: string): ASTNod
 
   const ast = parse(codeToParse, {
     sourceType: "module",
-    sourceFilename: "snippet.js",
+    sourceFilename: filePath || "snippet.js",
     plugins: [
       // enable jsx and flow syntax
       "jsx",
       "flow",
     ],
   });
+
+
 
   const trackedVariables: ASTNode[] = [];
   const nodes: ASTNode[] = [];
@@ -791,86 +995,137 @@ export default function dataDependencyTracker(codeToParseInput?: string): ASTNod
 
   const variableDeclaration: NodePath[] = [];
 
-  // const createNewNode = (path: NodePath) => {
-  //   path.setData("uid", id);
-  //   // path.node.nodePath = path
-  //   const newNode = new ASTNode(path);
-  //   id += 1;
-  //   return newNode;
-  // };
-  const trackeds: [{ scope: Scope; varName: string }] = [];
-  traverse(ast, {
-    enter(path) {
-      // const currentPath = createNewNode(path);
-      // path.setData("ASTNode", currentPath);
-      // allASTNodes.push(currentPath);
-      // nodes.push(currentPath);
-      if (path.isImportDeclaration()) {
+  const trackeds: { scope: Scope; varName: string }[] = [];
+  let currentScope: ASTScope | null | undefined
+
+  const processOnEnterPath = (path: NodePath) => {
+    if (path.isScope()) {
+      const newScope = new ASTScope(path.scope, scopes.length, scopeQueue[scopeQueue.length - 1]);
+      scopes.push(newScope);
+      scopeQueue.push(newScope);
+      currentScope = newScope
+    }
+    if (path.isImportDeclaration()) {
+      let importMissingScope: ASTScope['imports']['value'][] = []
+      const importPath = processImportPath(path.node.source.value, path.node.loc?.filename)
+      const code = readFileFromLocal(importPath)
+      if(code){
+        path.node.specifiers.forEach((imported) => {
+          if (currentScope && imported.type === 'ImportDefaultSpecifier'){
+            currentScope.imports[imported.local.name] = {
+              realName: imported.local.name,
+              localName: imported.local.name, 
+              ASTScope: null, 
+              codeImportedSuccess: true}
+
+            importMissingScope.push(currentScope.imports[imported.local.name])
+          } 
+          else if (currentScope && imported.type === 'ImportSpecifier') {
+            currentScope.imports[imported.imported.type === 'Identifier' 
+            ? imported.imported.name 
+            : imported.imported.value] = {
+              realName: imported.imported.type === 'Identifier' 
+              ? imported.imported.name 
+              : imported.imported.value,
+              localName: imported.local.name, 
+              ASTScope: null,
+              codeImportedSuccess: true
+            }
+
+            importMissingScope.push(currentScope.imports[imported.imported.type === 'Identifier' 
+            ? imported.imported.name 
+            : imported.imported.value])
+          }
+        })
+
+        const ast = parse(code, {
+          sourceType: "module",
+          sourceFilename: importPath,
+          plugins: [
+            // enable jsx and flow syntax
+            "jsx",
+            "flow",
+          ],
+        });
+        processASTIntoScopes(ast) // after this function, current function will be the top level Program of the imported file
+        
+        importMissingScope.forEach(imported => {
+          imported.ASTScope = currentScope?.getASTScope(imported.realName) || null
+        })
       }
-      if (path.isScope()) {
-        const newScope = new ASTScope(path.scope, scopes.length, scopeQueue[scopeQueue.length - 1]);
-        scopes.push(newScope);
-        scopeQueue.push(newScope);
+    }
+    if (
+      path.node.leadingComments &&
+      path.node.leadingComments.length > 0 &&
+      path.node.leadingComments.some((line) => line.value.includes(trackVariableCommentTag))
+    ) {
+      const trackedLine = path.node.leadingComments.find((line) =>
+        line.value.includes(trackVariableCommentTag),
+      )?.value;
+      const trackedName = trackedLine?.split("=")[1];
+      if (trackedName) {
+        trackeds.push({ scope: path.scope, varName: trackedName });
       }
+    }
+  
+    if (path.isVariableDeclaration()) {
+      variableDeclaration.push(path);
+      // detect tracked variables
       if (
         path.node.leadingComments &&
         path.node.leadingComments.length > 0 &&
-        path.node.leadingComments.some((line) => line.value.includes(trackVariableCommentTag))
+        path.node.leadingComments.some((line) => line.value === trackCommentTag)
       ) {
-        const trackedLine = path.node.leadingComments.find((line) =>
-          line.value.includes(trackVariableCommentTag),
-        )?.value;
-        const trackedName = trackedLine?.split("=")[1];
-        if (trackedName) {
-          trackeds.push({ scope: path.scope, varName: trackedName });
-        }
+        path.get("declarations").forEach((decl) => decl.setData("tracked", true));
       }
+    }
+  
+    if (path.isThisExpression()) {
+      const classScope = path
+        .findParent((parent) => parent.isClassDeclaration())
+        ?.scope?.getData("ASTScope");
+  
+      classScope.registerThisReference(path);
+    }
+  }
 
-      if (path.isVariableDeclaration()) {
-        variableDeclaration.push(path);
-        // detect tracked variables
-        if (
-          path.node.leadingComments &&
-          path.node.leadingComments.length > 0 &&
-          path.node.leadingComments.some((line) => line.value === trackCommentTag)
-        ) {
-          path.get("declarations").forEach((decl) => decl.setData("tracked", true));
-          // trackedVariables.push(currentPath);
-          // currentPath.tracked = true;
-        }
-      }
+  const processOnExitPath = (path: NodePath) => {
+    if (path.isScope()) {
+      currentScope = scopeQueue.pop();
+    }
+  }
 
-      if (path.isThisExpression()) {
-        const classScope = path
-          .findParent((parent) => parent.isClassDeclaration())
-          ?.scope?.getData("ASTScope");
-
-        classScope.registerThisReference(path);
-      }
-    },
-    exit(path) {
-      if (path.isScope()) {
-        scopeQueue.pop();
-      }
-    },
-  });
-  //nodes.forEach((_) => _.tracked && _.firstProcessingPhase());
-  trackeds.forEach(({ scope, varName }) => {
-    scope.getData("ASTScope").trackedVars.push(varName);
-  });
-  scopes.forEach((scope) => {
-    scope.processReferences();
-    Object.values(scope.ASTNodes).forEach((node) => {
-      allASTNodes.push(node);
-      node.tracked && trackedVariables.push(node);
-      //trackedVariables.push(node);
+  const processASTIntoScopes = (ast: Node) => {
+    traverse(ast, {
+      enter(path) {
+        processOnEnterPath(path)
+      },
+      exit(path) {
+        processOnExitPath(path)
+      },
     });
-  });
-  trackedVariables.forEach((_) => {
-    _.firstProcessingPhase();
-    _.processRecursivePhase();
-  });
-  // console.log(trackedVariables);
+    trackeds.forEach(({ scope, varName }) => {
+      scope.getData("ASTScope").trackedVars.push(varName);
+    });
+    scopes.forEach((scope) => {
+      scope.processReferences();
+      Object.values(scope.ASTNodes).forEach((node) => {
+        allASTNodes.push(node);
+        node.tracked && trackedVariables.push(node);
+        //trackedVariables.push(node);
+      });
+    });
+    trackedVariables.forEach((_) => {
+      _.firstProcessingPhase();
+      _.processRecursivePhase();
+    });
+
+  }
+
+  processASTIntoScopes(ast)
+
+  
+
   const isClient = typeof window === "undefined" ? false : true;
   if (isClient) {
     console.log(nodes.filter((node) => node.path.isVariableDeclarator()));
@@ -884,6 +1139,7 @@ export default function dataDependencyTracker(codeToParseInput?: string): ASTNod
     name,
     recursiveDataDependency,
   }));
+
   // return allASTNodes
   //   .filter((node) => node.eventBus.length > 0)
   //   .map(({ fragment, eventBus, name, recursiveDataDependency }) => ({
@@ -894,74 +1150,3 @@ export default function dataDependencyTracker(codeToParseInput?: string): ASTNod
   //   }));
 }
 
-export function getVariablesOnFile(codeToParseInput: string, fileName: string): any {
-  const allASTNodes: ASTNode[] = [];
-  let codeToParse: string;
-  if (!codeToParseInput) {
-    console.log("No code input");
-    return [];
-  } else {
-    codeToParse = codeToParseInput;
-  }
-
-  const ast = parse(codeToParse, {
-    sourceType: "module",
-    sourceFilename: fileName,
-    plugins: [
-      // enable jsx and flow syntax
-      "jsx",
-      "flow",
-    ],
-  });
-
-  const trackedVariables: ASTNode[] = [];
-  const nodes: ASTNode[] = [];
-  const scopes: ASTScope[] = [];
-  const scopeQueue: ASTScope[] = [];
-  const variableDeclaration: NodePath[] = [];
-  traverse(ast, {
-    enter(path) {
-      if (path.isScope()) {
-        const newScope = new ASTScope(path.scope, scopes.length, scopeQueue[scopeQueue.length - 1]);
-        scopes.push(newScope);
-        scopeQueue.push(newScope);
-      }
-      if (path.isVariableDeclaration()) {
-        variableDeclaration.push(path);
-      }
-
-      if (path.isThisExpression()) {
-        const classScope = path
-          .findParent((parent) => parent.isClassDeclaration())
-          ?.scope?.getData("ASTScope");
-
-        classScope.registerThisReference(path);
-      }
-    },
-    exit(path) {
-      if (path.isScope()) {
-        scopeQueue.pop();
-      }
-    },
-  });
-  scopes.forEach((scope) => {
-    scope.processReferences();
-    Object.values(scope.ASTNodes).forEach((node) => {
-      allASTNodes.push(node);
-      node.tracked && trackedVariables.push(node);
-      //trackedVariables.push(node);
-    });
-  });
-
-  const isClient = typeof window === "undefined" ? false : true;
-  if (isClient) {
-    console.log(scopes.map((scope) => scope));
-  }
-  return scopes
-    .filter((scope) => Object.keys(scope.ScopeReferencesAndAssignments.assignments).length > 0)
-    .map((scope) => ({
-      name: scope.name,
-      variables: Object.keys(scope.ScopeReferencesAndAssignments.assignments),
-      variableObjs: scope.ScopeReferencesAndAssignments.assignments,
-    }));
-}
