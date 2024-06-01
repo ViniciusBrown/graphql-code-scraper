@@ -4,9 +4,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea";
-import React, {useEffect, useState} from "react";
+import React, {useEffect, useRef, useState} from "react";
+import { Edge, Node, useEdgesState, useNodesState } from "reactflow";
 import { readFileFromLocal } from "../actions/get_file_from_local";
 import dataDependencyTracker from "../server/utils/data_dependency_tracker";
+import GraphFlow from "./GraphFlow";
 
 
 const codeFile = `function nestedFunctionTest(tracked_nested){
@@ -218,13 +220,23 @@ const MainPage: React.FC = () => {
 	const [folder, setFolder ] = useState('')
 	const single_file = "/Users/vdemedeirosbrown/code/code_scrapper/code-scrapper/src/tests/single_file_test_1.tsx"
 	const import_file = "/Users/vdemedeirosbrown/code/code_scrapper/code-scrapper/src/tests/import_file_test_1.tsx"
-	const [file, setFile] = useState(import_file)
+	const [file, setFile] = useState(single_file)
 	const [code, setCode] = useState('')
+	const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+	// const [nodes, setNodes] = useState<Node[]>([])
+	// const [edges, setEdges] = useState<Edge[]>([])
 
 	const processOnFrontEnd = async (code: string) => {
 		const data = await dataDependencyTracker(code, file)
 		console.log(data)
-		setTrackedVariables(data)
+		if(data.length > 0){
+			setTrackedVariables(data)
+			setNodes(data[0].node.nodes)
+			setEdges(data[0].node.edges)
+			
+		}
+		
 	}
 
 	useEffect(() => {
@@ -239,23 +251,35 @@ const MainPage: React.FC = () => {
 			<Input type="email" placeholder="Project Folder Path" className="" value={folder} onChange={e => setFolder(e.target.value)} />
 			<Input type="email" placeholder="Scan File Path" value={file} onChange={e => {setFile(e.target.value)}} />
 
-			<Tabs defaultValue="Code" className="">
+			<Tabs defaultValue="Code" className="h-[500px]">
 				<TabsList>
 					<TabsTrigger value="Code">Code</TabsTrigger>
 					<TabsTrigger value="Fragments">Fragments</TabsTrigger>
+					<TabsTrigger value="Graph">Graph</TabsTrigger>
 				</TabsList>
 				<TabsContent value="Code">
-				<Textarea rows={19} id={'input-code'} placeholder={'Please insert the code you want to crawl'} value={code} onChange={e => {setCode(e.target.value)}} />
+					<Textarea rows={20} id={'input-code'} placeholder={'Please insert the code you want to crawl'} value={code} onChange={e => {setCode(e.target.value)}} />
 				</TabsContent>
 				<TabsContent value="Fragments">
 					<div>
 						{trackedVariables?.map(({fragment, name}) => 
-								<Textarea rows={19} key={name} value={fragment.mergedValue} readOnly />
+								<Textarea rows={20} key={name} value={fragment.mergedValue} readOnly />
 						)}
 					</div>
 				</TabsContent>
+				<TabsContent value="Graph">
+					<GraphFlow 
+						nodes={nodes} 
+						setNodes={setNodes} 
+						onNodesChange={onNodesChange} 
+						edges={edges} 
+						setEdges={setEdges} 
+						onEdgesChange={onEdgesChange} 
+					/>
+				</TabsContent>
 			</Tabs>
 			<Button onClick={() => processOnFrontEnd(code)} className="w-[120px] self-center">Submit</Button>
+			
 		</div>
 		
 	</div>

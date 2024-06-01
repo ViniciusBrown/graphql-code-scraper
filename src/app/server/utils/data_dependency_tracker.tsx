@@ -5,17 +5,15 @@ import traverse, { Node, NodePath as NodePath, Scope } from "@babel/traverse";
 import {
   File,
   Identifier,
-  Import,
-  ImportDeclaration,
-  importDeclaration,
   JSXOpeningElement,
   ObjectPattern,
   ObjectProperty,
   Program,
   ThisExpression,
 } from "@babel/types";
-import { glob, globSync, globStream, globStreamSync, Glob } from 'glob'
+import { globSync } from 'glob'
 import { readFileSync, lstatSync, existsSync } from "fs"
+import { Edge } from "reactflow";
 
 type EventType = {
   type: string;
@@ -57,6 +55,12 @@ const getLastObj = (objToAdd: any, nextFields: string[][]) => {
   });
 };
 
+let id = -1
+const getNewId = () => {
+  id += 1
+  return id
+}
+
 class SubField {
   owner: ASTNode;
   name: string;
@@ -96,6 +100,156 @@ class SubField {
   }
 }
 
+class GraphNode{
+  name: string;
+  type: "expression_reference" | "scope_change" | "scope_change_rename" | "reassignment_reference" | "declaration";
+  inputs: GraphNode[];
+  outputs: { 
+    expression_references: {[key: string]: GraphNode}; 
+    in_scope_changes: {[key: string]: GraphNode}; 
+    scope_changes: {[key: string]: GraphNode}; 
+  };
+  triggeredEvent?: EventType;
+  id: string
+  ASTNode?: ASTNode;
+  ASTScope: ASTScope;
+
+  constructor(name: string, type: GraphNode['type'], ASTScope: ASTScope, triggeredEvent?: EventType, ASTNode?: ASTNode){
+    this.name = name
+    this.inputs = []
+    this.outputs = {expression_references: {}, in_scope_changes: {}, scope_changes: {}}
+    this.type = type
+    this.triggeredEvent = triggeredEvent
+    this.ASTScope = ASTScope
+    this.ASTNode = ASTNode
+    if(ASTNode){
+      ASTNode.node = this
+    }
+    this.id = getNewId().toString()
+  }
+  registerEvent(event: EventType){
+    if (event.type === "expression_reference") {
+      this.registerExpressionReferenceEvent(event)
+    } else if (event.type === "scope_change_reference") {
+      this.registerScopeChangeEvent(event)
+    } else if (event.type === "in_scope_reference") {
+      this.registerAssignmentReferenceEvent(event)
+    }
+  }
+  addOutputsFromArrayOfNames(names: string[]){
+    let currentNode: GraphNode = this
+    while(names.length > 0){
+      const newNodeName = names.pop() as string
+      let newNode = currentNode.outputs.expression_references[newNodeName]
+      if(!newNode){
+        newNode = currentNode.addOutputsAndInput(
+          newNodeName, 
+          "expression_references",
+          "expression_reference",
+          this.ASTScope
+        )
+      }
+      currentNode = newNode
+    } 
+    return currentNode  
+  }
+  registerExpressionReferenceEvent(event: EventType){
+    const mutatableCompleteFromVar = [...event.complete_from_var].reverse()
+    mutatableCompleteFromVar.pop()
+    this.addOutputsFromArrayOfNames(mutatableCompleteFromVar)
+  }
+  addOutputsAndInput(name: string, where: keyof typeof this.outputs, type: typeof this.type, ASTScope: ASTScope,event?: EventType, ASTNode?: ASTNode){
+    const newNode = new GraphNode(name, type, ASTScope, event, ASTNode)
+    this.outputs[where][name] = newNode
+    newNode.inputs.push(this)
+    return newNode
+  }
+  attachOutputAndInput(node: GraphNode, where: keyof typeof this.outputs){
+    this.outputs[where][node.name] = node
+    node.inputs.push(this)
+  }
+  registerScopeChangeEvent(event: EventType){
+    const mutatableCompleteFromVar = [...event.complete_from_var].reverse()
+    mutatableCompleteFromVar.pop()
+    const newScopeName = event.to_scope
+    const newVarName = event.to_var || ''
+
+    const lastNode = this.addOutputsFromArrayOfNames(mutatableCompleteFromVar.reverse())
+
+    const scopeChangeNode = lastNode
+    .addOutputsAndInput(newScopeName, "scope_changes", "scope_change", this.ASTScope, event, event?.to_obj || undefined)
+    const newNode = scopeChangeNode.ASTNode?.processGraphNodes()
+    if(newNode){
+      scopeChangeNode.attachOutputAndInput(newNode, "scope_changes")
+    }
+  }
+  registerAssignmentReferenceEvent(event: EventType){
+    const mutatableCompleteFromVar = [...event.complete_from_var].reverse()
+    mutatableCompleteFromVar.pop()
+    const newVarName = event.to_var || ''
+
+    const lastNode = this
+    .addOutputsFromArrayOfNames(mutatableCompleteFromVar.reverse())
+    .addOutputsAndInput(newVarName, "in_scope_changes", "reassignment_reference", this.ASTScope, event, event?.to_obj || undefined)
+    const newNode = lastNode.ASTNode?.processGraphNodes()
+    if(newNode){
+      lastNode.attachOutputAndInput(newNode, "in_scope_changes")
+    }
+    
+  }
+  traverse(onNodeEnter: (node: GraphNode)=>void){
+    Object.values(this.outputs).forEach(type => {
+      Object.values(type).forEach(output => {
+        onNodeEnter(output)
+        output.traverse(onNodeEnter)
+      })
+    })
+  }
+  get reactFlowNode(){
+    return ({
+      id: this.id, 
+      type: "CustomNode", 
+      position: {x: 0, y: 0}, 
+      data: {
+        name: this.name, 
+        type: this.type,
+        inputs: [''],
+        outputs: [''],
+        fragment: this.ASTNode?.fragment
+      }
+    })
+  }
+  get reactFlowEdges(){
+    const edges: Edge[] = []
+    let counter = 0
+    Object.values(this.outputs).forEach(type => {
+      Object.values(type).forEach(output => {
+        edges.push({ 
+          id: `edge-${this.name}-to-${output.name}-${counter}`, 
+          //type: 'smoothstep',
+          source: this.id, 
+          target: output.id, 
+          sourceHandle: `in-0`,
+          targetHandle: `out-0`,
+        })
+        counter += 1
+      })
+    })
+    return edges
+  }
+  getTraversedOutputsReactFlow(){
+    const nodes = [this.reactFlowNode]
+    const edges = [...this.reactFlowEdges]
+    this.traverse(
+      (node: GraphNode) => {
+        nodes.push(node.reactFlowNode)
+        edges.push(...node.reactFlowEdges)
+      }
+    )
+    return {nodes, edges}
+  }
+}
+
 class ASTNode {
   // main properties
   path: NodePath;
@@ -116,9 +270,12 @@ class ASTNode {
   scopeChangeEvents: EventType[];
   rawUseEvents: EventType[];
 
+  node: GraphNode;
+
   didEventBus: boolean;
   didDataDependency: boolean;
   didFragmentRecursiveGet: boolean;
+  didProcessNodes:  boolean;
   references: NodePath[];
   scope: ASTScope;
   subfields: any; //{ [key: string]: SubField };
@@ -157,6 +314,7 @@ class ASTNode {
     this.didEventBus = false;
     this.didDataDependency = false;
     this.didFragmentRecursiveGet = false;
+    this.didProcessNodes = false;
 
     this.references = references;
     this.subfields_two = this.tracked ? new SubField(this, this.name, null, true) : null;
@@ -344,6 +502,19 @@ class ASTNode {
       ),
       mergedEvents: this.mergedEventBus,
     };
+  }
+  processGraphNodes(){
+    if (!this.didEventBus) {
+      this.firstProcessingPhase();
+    }
+    this.node = new GraphNode(this.name, 'declaration', this.scope, null, this)
+    if (!this.didProcessNodes) {
+      this.eventBus.forEach((event) => {
+        this.node.registerEvent(event)
+      });
+    }
+    this.didProcessNodes = true;
+    return this.node
   }
   getMemberExpressionAsArray(node: NodePath): string[] {
     const names: string[] = [];
@@ -964,7 +1135,7 @@ const readFileFromLocal = (path: string): string | null => {
 }
 
 
-export default async function dataDependencyTracker(codeToParseInput?: string, filePath?: string): ASTNode[] {
+export default async function dataDependencyTracker(codeToParseInput?: string, filePath?: string) {
   const allASTNodes: ASTNode[] = [];
   console.log("working");
   let codeToParse: string;
@@ -1118,6 +1289,7 @@ export default async function dataDependencyTracker(codeToParseInput?: string, f
     trackedVariables.forEach((_) => {
       _.firstProcessingPhase();
       _.processRecursivePhase();
+      _.processGraphNodes();
     });
 
   }
@@ -1133,11 +1305,12 @@ export default async function dataDependencyTracker(codeToParseInput?: string, f
     console.log(scopes);
     console.log(trackedVariables);
   }
-  return trackedVariables.map(({ fragment, mergedEventBus, name, recursiveDataDependency }) => ({
+  return trackedVariables.map(({ fragment, mergedEventBus, name, recursiveDataDependency, node }) => ({
     eventBus: mergedEventBus.map((e) => ({ ...e, to_obj: e?.to_obj?.name || "" })),
     fragment,
     name,
     recursiveDataDependency,
+    node: node.getTraversedOutputsReactFlow(),
   }));
 
   // return allASTNodes

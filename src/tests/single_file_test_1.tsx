@@ -12,8 +12,9 @@ export function outerFunction2(tracked_two: { testFieldsString: any; testFieldsS
 	// this function on top of normal accesses will call the nestedFunctionTest to
 	// check if those variables are being tracked and references back.
 	const usage1 = tracked_two.testFieldsString
-	const usage2 = tracked_two.testFieldsSubObject.testSubFieldNull
-	const usage3 = nestedFunctionTest(tracked_two.testFieldsSubObject)
+	const usage2 = tracked_two.testFieldsSubObject
+    const usage3 = usage2.testSubFieldNull
+	const usage4 = nestedFunctionTest(usage2)
 	return null
 }
 
@@ -78,7 +79,8 @@ export function trackedInsideFunction() {
 			}
 		},
 		unusedTestVar: 'unused',
-		JSXChildrenTest: 'jsx'
+		JSXChildrenTest: 'jsx',
+		array: [{id: 0}],
 	}
 	const aff = {someVar: tracked_variable.unusedTestVar, otherVar: tracked_variable.testClassSentObj.testClassSubFieldObject}
 	const lol = aff.otherVar.testClassGrandChildString
