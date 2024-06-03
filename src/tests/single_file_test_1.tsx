@@ -14,7 +14,9 @@ export function outerFunction2(tracked_two: { testFieldsString: any; testFieldsS
 	const usage1 = tracked_two.testFieldsString
 	const usage2 = tracked_two.testFieldsSubObject
     const usage3 = usage2.testSubFieldNull
-	const usage4 = nestedFunctionTest(usage2)
+	if(tracked_two.ifStatementTestBoolean){
+    	const usage4 = () => nestedFunctionTest(usage2)
+    }
 	return null
 }
 
@@ -63,6 +65,7 @@ export function trackedInsideFunction() {
 	//track_this_variable
 	const tracked_variable = {
 		testFieldsString: 'test_string',
+		ifStatementTestBoolean: true,
 		testFieldsSubObject: {
 				testSubFieldNull: null,
 				testSubFieldString: 'test_substring',

@@ -16,7 +16,9 @@ import { readFileSync, lstatSync, existsSync } from "fs"
 import { Edge } from "reactflow";
 
 type EventType = {
-  type: string;
+  type: "expression_reference" |
+  "in_scope_reference" |
+  "scope_change_reference";
   from_var: string;
   to_var: null | string;
   to_obj: null | ASTNode;
@@ -29,10 +31,12 @@ type EventType = {
 type FragmentType = {
   name: string;
   contentObj: { [key: string]: any };
+  scopeContentObj: { [key: string]: any };
+  mergedContentObj: { [key: string]: any };
   value: string;
   fragmentsReferences: string[];
-  mergedContentObj: { [key: string]: any };
   mergedValue: string;
+  scopeValue: string;
 };
 
 const trackCommentTag = "track_this_variable";
@@ -136,7 +140,7 @@ class GraphNode{
       this.registerAssignmentReferenceEvent(event)
     }
   }
-  addOutputsFromArrayOfNames(names: string[]){
+  addOutputsFromArrayOfNames(names: string[], event?: EventType){
     let currentNode: GraphNode = this
     while(names.length > 0){
       const newNodeName = names.pop() as string
@@ -146,7 +150,8 @@ class GraphNode{
           newNodeName, 
           "expression_references",
           "expression_reference",
-          this.ASTScope
+          this.ASTScope,
+          event
         )
       }
       currentNode = newNode
@@ -156,7 +161,7 @@ class GraphNode{
   registerExpressionReferenceEvent(event: EventType){
     const mutatableCompleteFromVar = [...event.complete_from_var].reverse()
     mutatableCompleteFromVar.pop()
-    this.addOutputsFromArrayOfNames(mutatableCompleteFromVar)
+    this.addOutputsFromArrayOfNames(mutatableCompleteFromVar, event)
   }
   addOutputsAndInput(name: string, where: keyof typeof this.outputs, type: typeof this.type, ASTScope: ASTScope,event?: EventType, ASTNode?: ASTNode){
     const newNode = new GraphNode(name, type, ASTScope, event, ASTNode)
@@ -174,7 +179,7 @@ class GraphNode{
     const newScopeName = event.to_scope
     const newVarName = event.to_var || ''
 
-    const lastNode = this.addOutputsFromArrayOfNames(mutatableCompleteFromVar.reverse())
+    const lastNode = this.addOutputsFromArrayOfNames(mutatableCompleteFromVar, event)
 
     const scopeChangeNode = lastNode
     .addOutputsAndInput(newScopeName, "scope_changes", "scope_change", this.ASTScope, event, event?.to_obj || undefined)
@@ -189,7 +194,7 @@ class GraphNode{
     const newVarName = event.to_var || ''
 
     const lastNode = this
-    .addOutputsFromArrayOfNames(mutatableCompleteFromVar.reverse())
+    .addOutputsFromArrayOfNames(mutatableCompleteFromVar, event)
     .addOutputsAndInput(newVarName, "in_scope_changes", "reassignment_reference", this.ASTScope, event, event?.to_obj || undefined)
     const newNode = lastNode.ASTNode?.processGraphNodes()
     if(newNode){
@@ -215,7 +220,8 @@ class GraphNode{
         type: this.type,
         inputs: [''],
         outputs: [''],
-        fragment: this.ASTNode?.fragment
+        fragment: this.ASTNode?.fragment,
+        event: { ...this.triggeredEvent, to_obj: this.triggeredEvent?.to_obj?.name || "" }
       }
     })
   }
@@ -297,9 +303,11 @@ class ASTNode {
     this.fragment = {
       name: `${this.scope.name}_${this.fragmentType}`,
       contentObj: {},
-      value: "",
-      fragmentsReferences: [],
+      scopeContentObj: {},
       mergedContentObj: {},
+      fragmentsReferences: [],
+      value: "",
+      scopeValue: "",
       mergedValue: "",
     };
 
@@ -411,11 +419,15 @@ class ASTNode {
         //console.log(memberExpressionStringArray);
       });
       this.didEventBus = true;
-      this.mergedEventBus = this.eventBus.slice();
+      this.mergedEventBus = [...this.eventBus];
 
       if (this.eventBus.length > 0) {
         getLastObj(
           this.fragment.contentObj,
+          this.eventBus.map((event) => event.complete_from_var),
+        );
+        getLastObj(
+          this.fragment.scopeContentObj,
           this.eventBus.map((event) => event.complete_from_var),
         );
         this.fragment.value = this.processFragmentStringValue(this.fragment.contentObj);
@@ -423,7 +435,7 @@ class ASTNode {
     }
   }
   processFragmentStringValue(contentObj: { [key: string]: any }) {
-    const fragmentContent: string = JSON.stringify(contentObj, null, 2) || "";
+    const fragmentContent: string = JSON.stringify({...contentObj}, null, 2) || "";
     const formatedFragmentContent = fragmentContent.substring(1, fragmentContent.length - 1);
     return `fragment ${this.fragment.name} on ${this.fragmentType} {${formatedFragmentContent}}`
       .replace(/: {}/g, "")
@@ -433,7 +445,8 @@ class ASTNode {
   }
   processRecursivePhase() {
     this.recursivelyGetDataDependencies();
-    this.recursivelyGetFragments();
+    //this.recursivelyGetFragments();
+    this.recursivelyGetFragments2();
   }
   recursivelyGetFragments() {
     if (!this.didEventBus) {
@@ -441,17 +454,15 @@ class ASTNode {
     }
     if (!this.didFragmentRecursiveGet && this.fragment.contentObj) {
       this.eventBus.forEach((event) => {
-        if (event.type === "scope_change_reference") {
-          const toObj = event.to_obj;
-          if (toObj) {
-            const toObjFragment = toObj.recursivelyGetFragments();
-            this.fragment.contentObj[`...${toObjFragment.name}`] = {};
-            this.fragment.fragmentsReferences = [
-              ...this.fragment.fragmentsReferences,
-              toObjFragment.value,
-              ...toObjFragment.fragmentsReferences,
-            ];
-          }
+        const toObj = event.to_obj;
+        if (toObj) {
+          const toObjFragment = toObj.recursivelyGetFragments();
+          this.fragment.contentObj[`...${toObjFragment.name}`] = {};
+          this.fragment.fragmentsReferences = [
+            ...this.fragment.fragmentsReferences,
+            ...toObjFragment.fragmentsReferences,
+            toObjFragment.value,
+          ];
         }
       });
       getLastObj(this.fragment.mergedContentObj, this.recursiveDataDependency);
@@ -462,6 +473,65 @@ class ASTNode {
     this.didFragmentRecursiveGet = true;
     return this.fragment;
   }
+
+  recursivelyGetFragments2() {
+    if (!this.didEventBus) {
+      this.firstProcessingPhase();
+    }
+    
+    const traverseContentObj = (searchResult: any, vars: string[]): any => {
+      const varName = vars?.pop()
+      if(!varName) return searchResult
+      if(!searchResult[varName]) return null
+      if(searchResult[varName]) {
+        return traverseContentObj(searchResult[varName], vars)
+      }
+    }
+    if (!this.didFragmentRecursiveGet && this.fragment.contentObj) {
+      this.eventBus.forEach((event) => {
+        
+        const toObj = event.to_obj;
+        if (toObj) {
+          const toObjFragment = toObj.recursivelyGetFragments2();
+
+          if(event.type === 'scope_change_reference') {
+            const vars = [...event.complete_from_var].reverse()
+            const lastVar = vars.shift()
+            
+            const searchResult_local = traverseContentObj(this.fragment.contentObj, vars)
+            searchResult_local[lastVar] = {...searchResult_local[lastVar], [`...${toObjFragment.name}`]: {}}
+            
+            const searchResult_scope = traverseContentObj(this.fragment.scopeContentObj, vars)
+            searchResult_scope[lastVar] = {...searchResult_scope[lastVar], [`...${toObjFragment.name}`]: {}}
+            
+            this.fragment.fragmentsReferences.push(toObjFragment)
+          } else if (event.type === 'in_scope_reference') {
+            const vars = [...event.complete_from_var].reverse()
+            event.to_var 
+            && toObjFragment.scopeContentObj[event.to_var] 
+            && Object.assign(
+                traverseContentObj(this.fragment.scopeContentObj, vars), 
+                JSON.parse(JSON.stringify(toObjFragment.scopeContentObj[event.to_var])
+                )
+              )
+            this.fragment.fragmentsReferences = [
+              ...this.fragment.fragmentsReferences,
+              ...toObjFragment.fragmentsReferences,
+            ];
+          }
+          
+        }
+      });
+      getLastObj(this.fragment.mergedContentObj, this.recursiveDataDependency);
+      this.fragment.value = this.processFragmentStringValue(this.fragment.contentObj);
+      this.fragment.scopeValue = this.processFragmentStringValue(this.fragment.scopeContentObj);
+      this.fragment.mergedValue = this.processFragmentStringValue(this.fragment.mergedContentObj);
+    }
+
+    this.didFragmentRecursiveGet = true;
+    return this.fragment;
+  }
+
   recursivelyGetDataDependencies(nameFilter?: string | null) {
     if (!this.didEventBus) {
       this.firstProcessingPhase();
@@ -754,6 +824,14 @@ class ASTScope {
   childScopes: ASTScope[];
   trackedVars: string[];
   imports: {[name: string]: {realName: string, localName: string, ASTScope: ASTScope | null, codeImportedSuccess: boolean}}
+  fragment: {
+    name: string,
+    spreads: {[name: string]: string},
+    contentObj: any,
+    mergedContentObj: any,
+    fragmentString: string,
+    mergedFragmentString: string,
+  }
 
   constructor(scope: Scope, uid: number, parent: ASTScope | null = null) {
     this.scope = scope;
@@ -785,7 +863,7 @@ class ASTScope {
     this.scope.setData("name", this.name);
 
     if (this.parent) this.parent.childScopes.push(this);
-
+    
     this.ScopeReferencesAndAssignments = {
       references: {},
       assignments: {},
@@ -796,6 +874,16 @@ class ASTScope {
         if (declar.isClassMethod() && declar.node.key?.name)
           this.ScopeReferencesAndAssignments.assignments[declar.node.key.name] = declar;
       }
+    }
+
+    const fragmentType = 'fragmentType'
+    this.fragment = {
+      name: `${this.name}_${fragmentType}`,
+      spreads: {},
+      contentObj: {},
+      mergedContentObj: {},
+      fragmentString: '',
+      mergedFragmentString: '',
     }
   }
   registerThisReference(ref: NodePath<ThisExpression>) {
@@ -1151,7 +1239,7 @@ export default async function dataDependencyTracker(codeToParseInput?: string, f
     plugins: [
       // enable jsx and flow syntax
       "jsx",
-      "flow",
+      "typescript"
     ],
   });
 
