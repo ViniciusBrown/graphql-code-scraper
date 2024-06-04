@@ -189,37 +189,14 @@ function trackedInsideFunction() {
 
 
 const MainPage: React.FC = () => {
-  const [mainFile, setMainFile] = useState<string>('')
-  const [repoName, setRepoName] = useState<string>('')
-  const [filePath, setFilePath] = useState<string>('')
-
-  const [trackableVariables, setTrackableVariables] = useState<string[]>([])
-  const [trackedVariable, setTrackedVariable] = useState<string>('')
-
   const [trackedVariables, setTrackedVariables] = useState([])
+  const real_folder = '/home/vdemedeirosbrown/code/pinboard/webapp/'
+	const tests_folder = '/home/vdemedeirosbrown/code/graphql-code-scraper/src/tests/'
+	const [folder, setFolder ] = useState(tests_folder)
+	const single_file = "single_file_test_1.tsx"
+	const import_file = "import_file_test_1.tsx"
+	const real_file = 'app/common/react/components/growth/smb/PromotedPinPreview/PromotedPinPreview.tsx'
 
-  // const processCode = (code: string) => axios.get(
-  //   "/api/example", 
-  //   {params: {'code': code}})
-  //   .then(({data}) => {
-	// 	console.log(data)
-	// 	setTrackedVariables(data)
-	// })
-
-	// const getCode = async (repo: string, path: string) => axios.post(
-	// 	"/api/example", 
-	// 	{'path': path, 'repository': repo})
-	// 	.then(({data}) => {
-	// 		data && data.fileContent && typeof data.fileContent === 'string' && setMainFile(data.fileContent)
-	// 		console.log(data)
-	// 		console.log(getVariablesOnFile(data.fileContent, "lol.js"))
-	// 	}
-	// )
-
-	
-	const [folder, setFolder ] = useState('')
-	const single_file = "/Users/vdemedeirosbrown/code/code_scrapper/code-scrapper/src/tests/single_file_test_1.tsx"
-	const import_file = "/Users/vdemedeirosbrown/code/code_scrapper/code-scrapper/src/tests/import_file_test_1.tsx"
 	const [file, setFile] = useState(single_file)
 	const [code, setCode] = useState('')
 	const [nodes, setNodes, onNodesChange] = useNodesState([]);
@@ -228,7 +205,9 @@ const MainPage: React.FC = () => {
 	// const [edges, setEdges] = useState<Edge[]>([])
 
 	const processOnFrontEnd = async (code: string) => {
-		const data = await dataDependencyTracker(code, file)
+		console.log(folder)
+		console.log((folder || '') + (file || ''))
+		const data = await dataDependencyTracker(code, file, folder)
 		console.log(data)
 		if(data.length > 0){
 			setTrackedVariables(data)
@@ -240,9 +219,9 @@ const MainPage: React.FC = () => {
 	}
 
 	useEffect(() => {
-		console.log(file)
-		readFileFromLocal(file).then(d => d && setCode(d))
-	}, [file])
+		console.log((folder || '') + (file || ''))
+		readFileFromLocal((folder || '') + (file || '')).then(d => d && setCode(d))
+	}, [file, folder])
 	/// /Users/vdemedeirosbrown/code/pinboard/webapp/app/www/BannerButton.js
   return (
 	<div className="flex flex-col justify-center gap-y-3 w-full">

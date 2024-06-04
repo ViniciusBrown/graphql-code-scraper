@@ -22,7 +22,7 @@ type EventType = {
   from_var: string;
   to_var: null | string;
   to_obj: null | ASTNode;
-  complete_from_var: string[];
+  memberExpressionAsArray: string[];
   from_scope: string;
   to_scope: string;
   id?: string;
@@ -159,7 +159,7 @@ class GraphNode{
     return currentNode  
   }
   registerExpressionReferenceEvent(event: EventType){
-    const mutatableCompleteFromVar = [...event.complete_from_var].reverse()
+    const mutatableCompleteFromVar = [...event.memberExpressionAsArray].reverse()
     mutatableCompleteFromVar.pop()
     this.addOutputsFromArrayOfNames(mutatableCompleteFromVar, event)
   }
@@ -174,7 +174,7 @@ class GraphNode{
     node.inputs.push(this)
   }
   registerScopeChangeEvent(event: EventType){
-    const mutatableCompleteFromVar = [...event.complete_from_var].reverse()
+    const mutatableCompleteFromVar = [...event.memberExpressionAsArray].reverse()
     mutatableCompleteFromVar.pop()
     const newScopeName = event.to_scope
     const newVarName = event.to_var || ''
@@ -189,7 +189,7 @@ class GraphNode{
     }
   }
   registerAssignmentReferenceEvent(event: EventType){
-    const mutatableCompleteFromVar = [...event.complete_from_var].reverse()
+    const mutatableCompleteFromVar = [...event.memberExpressionAsArray].reverse()
     mutatableCompleteFromVar.pop()
     const newVarName = event.to_var || ''
 
@@ -424,11 +424,11 @@ class ASTNode {
       if (this.eventBus.length > 0) {
         getLastObj(
           this.fragment.contentObj,
-          this.eventBus.map((event) => event.complete_from_var),
+          this.eventBus.map((event) => event.memberExpressionAsArray),
         );
         getLastObj(
           this.fragment.scopeContentObj,
-          this.eventBus.map((event) => event.complete_from_var),
+          this.eventBus.map((event) => event.memberExpressionAsArray),
         );
         this.fragment.value = this.processFragmentStringValue(this.fragment.contentObj);
       }
@@ -446,35 +446,9 @@ class ASTNode {
   processRecursivePhase() {
     this.recursivelyGetDataDependencies();
     //this.recursivelyGetFragments();
-    this.recursivelyGetFragments2();
+    this.recursivelyGetFragments();
   }
   recursivelyGetFragments() {
-    if (!this.didEventBus) {
-      this.firstProcessingPhase();
-    }
-    if (!this.didFragmentRecursiveGet && this.fragment.contentObj) {
-      this.eventBus.forEach((event) => {
-        const toObj = event.to_obj;
-        if (toObj) {
-          const toObjFragment = toObj.recursivelyGetFragments();
-          this.fragment.contentObj[`...${toObjFragment.name}`] = {};
-          this.fragment.fragmentsReferences = [
-            ...this.fragment.fragmentsReferences,
-            ...toObjFragment.fragmentsReferences,
-            toObjFragment.value,
-          ];
-        }
-      });
-      getLastObj(this.fragment.mergedContentObj, this.recursiveDataDependency);
-      this.fragment.mergedValue = this.processFragmentStringValue(this.fragment.mergedContentObj);
-      this.fragment.value = this.processFragmentStringValue(this.fragment.contentObj);
-    }
-
-    this.didFragmentRecursiveGet = true;
-    return this.fragment;
-  }
-
-  recursivelyGetFragments2() {
     if (!this.didEventBus) {
       this.firstProcessingPhase();
     }
@@ -492,10 +466,10 @@ class ASTNode {
         
         const toObj = event.to_obj;
         if (toObj) {
-          const toObjFragment = toObj.recursivelyGetFragments2();
+          const toObjFragment = toObj.recursivelyGetFragments();
 
           if(event.type === 'scope_change_reference') {
-            const vars = [...event.complete_from_var].reverse()
+            const vars = [...event.memberExpressionAsArray].reverse()
             const lastVar = vars.shift()
             
             const searchResult_local = traverseContentObj(this.fragment.contentObj, vars)
@@ -506,7 +480,7 @@ class ASTNode {
             
             this.fragment.fragmentsReferences.push(toObjFragment)
           } else if (event.type === 'in_scope_reference') {
-            const vars = [...event.complete_from_var].reverse()
+            const vars = [...event.memberExpressionAsArray].reverse()
             event.to_var 
             && toObjFragment.scopeContentObj[event.to_var] 
             && Object.assign(
@@ -531,7 +505,6 @@ class ASTNode {
     this.didFragmentRecursiveGet = true;
     return this.fragment;
   }
-
   recursivelyGetDataDependencies(nameFilter?: string | null) {
     if (!this.didEventBus) {
       this.firstProcessingPhase();
@@ -553,7 +526,7 @@ class ASTNode {
     if (!this.didDataDependency) {
       this.didDataDependency = true;
       this.eventBus.forEach((event) => {
-        const currentReference = event.complete_from_var;
+        const currentReference = event.memberExpressionAsArray;
         this.recursiveDataDependency.push(currentReference);
         if (event.to_obj) {
           const { dataDependency, mergedEvents } = event.to_obj.recursivelyGetDataDependencies(
@@ -601,7 +574,11 @@ class ASTNode {
         rootNode &&
           rootNode.traverse({
             enter(path) {
-              path.isIdentifier() && names.push(path.node.name);
+              if(path.isIdentifier()) { 
+                names.push(path.node.name)
+              } else if (path.isStringLiteral()) { 
+                names.push(path.node.value)
+              }
             },
           });
       } else {
@@ -659,7 +636,7 @@ class ASTNode {
     return null;
   }
   addEvent(event: EventType) {
-    this.registerSubFieldsFromArray(event.complete_from_var);
+    this.registerSubFieldsFromArray(event.memberExpressionAsArray);
     const id = Object.values(event).join("_");
     if (!this.eventBus.find((e) => e.id === id)) {
       if (event.type === "expression_reference") {
@@ -678,7 +655,7 @@ class ASTNode {
       from_var: originName,
       to_var: null,
       to_obj: null,
-      complete_from_var: memberExpressionStringArray,
+      memberExpressionAsArray: memberExpressionStringArray,
       from_scope: this.path.scope.getData("name") || "",
       to_scope: this.path.scope.getData("name") || "",
     };
@@ -730,7 +707,7 @@ class ASTNode {
           from_var: originName,
           to_var: declObj.name,
           to_obj: declObj,
-          complete_from_var: membersExpressions[i],
+          memberExpressionAsArray: membersExpressions[i],
           from_scope: declObj.scope.name,
           to_scope: declObj.scope.name,
         };
@@ -748,7 +725,7 @@ class ASTNode {
       from_var: originName,
       to_var: "",
       to_obj: null,
-      complete_from_var: memberExpressionStringArray,
+      memberExpressionAsArray: memberExpressionStringArray,
       from_scope: rootNode.scope.getData("ASTScope").name || "",
       to_scope: "",
     };
@@ -823,7 +800,7 @@ class ASTScope {
   ASTNodes: { [name: string]: ASTNode };
   childScopes: ASTScope[];
   trackedVars: string[];
-  imports: {[name: string]: {realName: string, localName: string, ASTScope: ASTScope | null, codeImportedSuccess: boolean}}
+  imports: {[name: string]: {realName: string, localName: string, ASTScope: ASTScope | null, codeImportedSuccess: boolean, code: string | null, getASTScopeFromCodeFn: ()=>ASTNode | null}}
   fragment: {
     name: string,
     spreads: {[name: string]: string},
@@ -832,10 +809,15 @@ class ASTScope {
     fragmentString: string,
     mergedFragmentString: string,
   }
+  exported: boolean;
+  defaultExported: boolean;
 
   constructor(scope: Scope, uid: number, parent: ASTScope | null = null) {
     this.scope = scope;
     this.path = scope.path;
+
+    this.exported = this.path.parentPath?.isExportNamedDeclaration() || false
+    this.defaultExported = this.path.parentPath?.isExportDefaultDeclaration() || false
 
     if (this.path.isClassMethod()) {
       this.name = this.path.node.key?.name;
@@ -924,7 +906,7 @@ class ASTScope {
           const declaratorId = parentExpression.get("id");
           if (!Array.isArray(declaratorId)) {
             if (declaratorId.isObjectPattern()) {
-              // if got here its either const { tracked_var } = this || this.props
+              // if got here its either const { tracked_var } = this or this.props
               // register as reference the var name after this or props, if there isnt, register the object destructured
               // i.e const { tracked_var } = this.props ---> this should mark a reference to tracked_var
               // i.e const { subField } = this.props.tracked_var ---> this should mark a reference only to tracked_var
@@ -941,8 +923,9 @@ class ASTScope {
           ? ref.parentPath.get("property")
           : ref?.parentPath?.parentPath?.get("property");
     }
-    if (!pathToRegister) return;
-    if (!this.ScopeReferencesAndAssignments.assignments[pathToRegister.node.name])
+    if (!pathToRegister || !pathToRegister.node) return;
+    
+    if (pathToRegister.node.name && !this.ScopeReferencesAndAssignments.assignments[pathToRegister.node.name])
       this.ScopeReferencesAndAssignments.assignments[pathToRegister.node.name] = pathToRegister;
     const owner = this.getRootOfMemberExpression(pathToRegister)?.parentPath;
     if (!owner?.isAssignmentExpression()) {
@@ -954,6 +937,10 @@ class ASTScope {
           ]
         : [pathToRegister];
     }
+    this.ScopeReferencesAndAssignments.references[pathToRegister.node.name] = [
+      ...this.ScopeReferencesAndAssignments.references[pathToRegister.node.name],
+      ...pathToRegister.scope.bindings[pathToRegister.node.name]?.referencePaths || []
+    ]
   }
   getASTNodeBinding(nodeName: string): ASTNode | null {
     let astNode: ASTNode | null = null;
@@ -971,11 +958,11 @@ class ASTScope {
     while (currentScope !== null && astScope === null) {
       currentScope && currentScope.childScopes.find(scope => scope.name === scopeName)
         ? (astScope = currentScope.childScopes.find(scope => scope.name === scopeName))
-        : (currentScope = currentScope?.parent || currentScope || null);
+        : (currentScope = currentScope?.parent || null);
       if (astScope === null && currentScope){
         Object.values(currentScope.imports).forEach(imported => {
           if(imported.localName === scopeName){
-            astScope = imported.ASTScope
+            astScope = imported.getASTScopeFromCodeFn() || null
           }
         })
       }
@@ -1075,133 +1062,133 @@ const processImportPath = (importPath: string, nodePath?: string) => {
   return importPath
 }
 
-const processImports = (ast: File) => {
-  const processImportPath = (importPath: string, nodePath?: string) => {
-    const paths = importPath.split("/")
-    if (paths[0] === '.' && nodePath){
-      const newPath = nodePath.split("/")
-      newPath.pop()
-      paths.shift()
-      return [...newPath, paths].join("/")
-    } else if (paths[0] === '@'){
-      return importPath
-    }
-    return importPath
-  }
-  const files: {[key: string]: string} = {}
-  function recursiveGetASTs(ast: Program){
-    const imports: {[key: string]: {name: string, path: string, content?: Node}} = {}
-    const exports: {[key: string]: {name: null | string, path: string, content?: Node}} = {}
-    const others: {[key: string]: {name: null | string, path: string, content?: Node}} = {}
-    if(ast){
-      ast.body.forEach(path => {
-        if (path.type === 'ImportDeclaration') {
-          const importPath = processImportPath(path.source.value, path.loc?.filename)
+// const processImports = (ast: File) => {
+//   const processImportPath = (importPath: string, nodePath?: string) => {
+//     const paths = importPath.split("/")
+//     if (paths[0] === '.' && nodePath){
+//       const newPath = nodePath.split("/")
+//       newPath.pop()
+//       paths.shift()
+//       return [...newPath, paths].join("/")
+//     } else if (paths[0] === '@'){
+//       return importPath
+//     }
+//     return importPath
+//   }
+//   const files: {[key: string]: string} = {}
+//   function recursiveGetASTs(ast: Program){
+//     const imports: {[key: string]: {name: string, path: string, content?: Node}} = {}
+//     const exports: {[key: string]: {name: null | string, path: string, content?: Node}} = {}
+//     const others: {[key: string]: {name: null | string, path: string, content?: Node}} = {}
+//     if(ast){
+//       ast.body.forEach(path => {
+//         if (path.type === 'ImportDeclaration') {
+//           const importPath = processImportPath(path.source.value, path.loc?.filename)
           
-          path.specifiers.forEach((imported) => {
-            if (imported.type === 'ImportDefaultSpecifier'){
-              imports[imported.local.name] = {name: imported.local.name, path: importPath}
-            } else if (imported.type === 'ImportSpecifier') {
-              imports[imported.imported.type === 'Identifier' 
-              ? imported.imported.name 
-              : imported.imported.value] = {
-                name: imported.local.name, 
-                path: importPath
-              }
-            }
-          })
-        }
-        else if(path.type === 'ExportNamedDeclaration'){
-          if(path.declaration){
-            if(path.declaration.id && path.declaration.id.name){
-              exports[path.declaration.id.name] = {
-                name: path.declaration.id.name,
-                path: '',
-                content: path.declaration
-              }
-            }
-          } else if (path.specifiers.length > 0){
-            path.specifiers.forEach(exported => {
-              exports[exported.exported.type === 'Identifier' ? exported.exported.name : exported.exported.value] = {
-                name: exported.local.name,
-                path: '',
-                content: ast.body.find(node => 'id' in node && node.id && 'name' in node.id && node.id.name === exported.local.name)
-              }
-            })
-          }
-        }
-        else if(path.type === 'ExportDefaultDeclaration'){
-          if(path.declaration){
-            if(path.declaration.type === 'Identifier'){
-              exports['default'] = {
-                name: path.declaration.name,
-                path: '',
-                content: ast.body.find(node => 'id' in node && node.id && 'name' in node.id && node.id.name === path.declaration.name)
-              }
-            } else if ('id' in path.declaration && path.declaration.id && path.declaration.id.type === 'Identifier') {
-              exports['default'] = {
-                name: path.declaration.id.name,
-                path: '',
-                content: path.declaration
-              }
-            } else {
-              exports['default'] = {
-                name: null,
-                path: '',
-                content: path.declaration
-              }
-            }
-          }
-        }
-        else if(path.type === 'ClassDeclaration' || path.type === 'FunctionDeclaration'){
-          if(path.id?.name){
-            exports[path.id.name] = {
-              name: path.id.name,
-              path: '',
-              content: path
-            }
-          }
-        }
-      })
+//           path.specifiers.forEach((imported) => {
+//             if (imported.type === 'ImportDefaultSpecifier'){
+//               imports[imported.local.name] = {name: imported.local.name, path: importPath}
+//             } else if (imported.type === 'ImportSpecifier') {
+//               imports[imported.imported.type === 'Identifier' 
+//               ? imported.imported.name 
+//               : imported.imported.value] = {
+//                 name: imported.local.name, 
+//                 path: importPath
+//               }
+//             }
+//           })
+//         }
+//         else if(path.type === 'ExportNamedDeclaration'){
+//           if(path.declaration){
+//             if(path.declaration.id && path.declaration.id.name){
+//               exports[path.declaration.id.name] = {
+//                 name: path.declaration.id.name,
+//                 path: '',
+//                 content: path.declaration
+//               }
+//             }
+//           } else if (path.specifiers.length > 0){
+//             path.specifiers.forEach(exported => {
+//               exports[exported.exported.type === 'Identifier' ? exported.exported.name : exported.exported.value] = {
+//                 name: exported.local.name,
+//                 path: '',
+//                 content: ast.body.find(node => 'id' in node && node.id && 'name' in node.id && node.id.name === exported.local.name)
+//               }
+//             })
+//           }
+//         }
+//         else if(path.type === 'ExportDefaultDeclaration'){
+//           if(path.declaration){
+//             if(path.declaration.type === 'Identifier'){
+//               exports['default'] = {
+//                 name: path.declaration.name,
+//                 path: '',
+//                 content: ast.body.find(node => 'id' in node && node.id && 'name' in node.id && node.id.name === path.declaration.name)
+//               }
+//             } else if ('id' in path.declaration && path.declaration.id && path.declaration.id.type === 'Identifier') {
+//               exports['default'] = {
+//                 name: path.declaration.id.name,
+//                 path: '',
+//                 content: path.declaration
+//               }
+//             } else {
+//               exports['default'] = {
+//                 name: null,
+//                 path: '',
+//                 content: path.declaration
+//               }
+//             }
+//           }
+//         }
+//         else if(path.type === 'ClassDeclaration' || path.type === 'FunctionDeclaration'){
+//           if(path.id?.name){
+//             exports[path.id.name] = {
+//               name: path.id.name,
+//               path: '',
+//               content: path
+//             }
+//           }
+//         }
+//       })
       
-    }
-    console.log('imports')
-    console.log(imports)
-    console.log('exports')
-    console.log(exports)
-    Object.keys(imports).forEach(key => {
-      const imported = imports[key]
-      const newImportPath = imported.path
-      readFileFromLocal(newImportPath).then(code => {
-        if(code){
-          const ast = parse(code, {
-            sourceType: "module",
-            sourceFilename: newImportPath,
-            plugins: [
-              // enable jsx and flow syntax
-              "jsx",
-              "flow",
-            ],
-          });
-          if(ast){
-            const importedVars = recursiveGetASTs(ast.program)
-            Object.keys(importedVars).forEach(declaration => {
-              if(imports[declaration]){
-                imports[declaration].content = importedVars[declaration].content
-              } else if(importedVars[declaration].name){
-                imports[declaration] = {...importedVars[declaration], path: newImportPath}
-              }
-            })
-          }
-        }
-      })
-    })
-    return exports
-  }
-  console.log('got here')
-  recursiveGetASTs(ast.program)
+//     }
+//     console.log('imports')
+//     console.log(imports)
+//     console.log('exports')
+//     console.log(exports)
+//     Object.keys(imports).forEach(key => {
+//       const imported = imports[key]
+//       const newImportPath = imported.path
+//       readFileFromLocal(newImportPath).then(code => {
+//         if(code){
+//           const ast = parse(code, {
+//             sourceType: "module",
+//             sourceFilename: newImportPath,
+//             plugins: [
+//               // enable jsx and flow syntax
+//               "jsx",
+//               "flow",
+//             ],
+//           });
+//           if(ast){
+//             const importedVars = recursiveGetASTs(ast.program)
+//             Object.keys(importedVars).forEach(declaration => {
+//               if(imports[declaration]){
+//                 imports[declaration].content = importedVars[declaration].content
+//               } else if(importedVars[declaration].name){
+//                 imports[declaration] = {...importedVars[declaration], path: newImportPath}
+//               }
+//             })
+//           }
+//         }
+//       })
+//     })
+//     return exports
+//   }
+//   console.log('got here')
+//   recursiveGetASTs(ast.program)
 
-}
+// }
 
 
 const readFileFromLocal = (path: string): string | null => {
@@ -1223,7 +1210,7 @@ const readFileFromLocal = (path: string): string | null => {
 }
 
 
-export default async function dataDependencyTracker(codeToParseInput?: string, filePath?: string) {
+export default async function dataDependencyTracker(codeToParseInput?: string, filePath?: string, folderPath?: string) {
   const allASTNodes: ASTNode[] = [];
   console.log("working");
   let codeToParse: string;
@@ -1235,126 +1222,140 @@ export default async function dataDependencyTracker(codeToParseInput?: string, f
 
   const ast = parse(codeToParse, {
     sourceType: "module",
-    sourceFilename: filePath || "snippet.js",
+    sourceFilename: ((folderPath || '') + (filePath || '')) || "snippet.js",
     plugins: [
       // enable jsx and flow syntax
       "jsx",
       "typescript"
     ],
   });
+  const processASTIntoScopes = (ast: Node) => {
+    const trackedVariables: ASTNode[] = [];
+    const nodes: ASTNode[] = [];
+    const scopes: ASTScope[] = [];
+    const scopeQueue: ASTScope[] = [];
+    const variableDeclaration: NodePath[] = [];
+    const trackeds: { scope: Scope; varName: string }[] = [];
+    let currentScope: ASTScope | null | undefined
 
-
-
-  const trackedVariables: ASTNode[] = [];
-  const nodes: ASTNode[] = [];
-  const scopes: ASTScope[] = [];
-  const scopeQueue: ASTScope[] = [];
-
-  //let id = 0;
-
-  const variableDeclaration: NodePath[] = [];
-
-  const trackeds: { scope: Scope; varName: string }[] = [];
-  let currentScope: ASTScope | null | undefined
-
-  const processOnEnterPath = (path: NodePath) => {
-    if (path.isScope()) {
-      const newScope = new ASTScope(path.scope, scopes.length, scopeQueue[scopeQueue.length - 1]);
-      scopes.push(newScope);
-      scopeQueue.push(newScope);
-      currentScope = newScope
-    }
-    if (path.isImportDeclaration()) {
-      let importMissingScope: ASTScope['imports']['value'][] = []
-      const importPath = processImportPath(path.node.source.value, path.node.loc?.filename)
-      const code = readFileFromLocal(importPath)
-      if(code){
-        path.node.specifiers.forEach((imported) => {
-          if (currentScope && imported.type === 'ImportDefaultSpecifier'){
-            currentScope.imports[imported.local.name] = {
-              realName: imported.local.name,
-              localName: imported.local.name, 
-              ASTScope: null, 
-              codeImportedSuccess: true}
-
-            importMissingScope.push(currentScope.imports[imported.local.name])
-          } 
-          else if (currentScope && imported.type === 'ImportSpecifier') {
-            currentScope.imports[imported.imported.type === 'Identifier' 
-            ? imported.imported.name 
-            : imported.imported.value] = {
-              realName: imported.imported.type === 'Identifier' 
+    const processOnEnterPath = (path: NodePath) => {
+      if (path.isScope()) {
+        const newScope = new ASTScope(path.scope, scopes.length, scopeQueue[scopeQueue.length - 1]);
+        scopes.push(newScope);
+        scopeQueue.push(newScope);
+        currentScope = newScope
+      }
+      if (path.isImportDeclaration()) {
+        let importMissingScope: ASTScope['imports']['value'][] = []
+        const importPath = processImportPath(((folderPath || '') + path.node.source.value), path.node.loc?.filename)
+        const code = readFileFromLocal(importPath)
+        if(code){
+          path.node.specifiers.forEach((imported) => {
+            if (currentScope && imported.type === 'ImportDefaultSpecifier'){
+              currentScope.imports[imported.local.name] = {
+                realName: imported.local.name,
+                localName: imported.local.name, 
+                ASTScope: null, 
+                codeImportedSuccess: false,
+                code: code,
+                getASTScopeFromCodeFn: () => {
+                  const ast = parse(code, {
+                    sourceType: "module",
+                    sourceFilename: importPath,
+                    plugins: [
+                      // enable jsx and flow syntax
+                      "jsx",
+                      "typescript",
+                    ],
+                  });
+                  const {scopes} = processASTIntoScopes(ast) // after this function, current function will be the top level Program of the imported file
+                  return scopes.find(scope => scope.defaultExported) || null
+                }
+              }
+              importMissingScope.push(currentScope.imports[imported.local.name])
+            } 
+            else if (currentScope && imported.type === 'ImportSpecifier') {
+              const realName = imported.imported.type === 'Identifier' 
               ? imported.imported.name 
-              : imported.imported.value,
-              localName: imported.local.name, 
-              ASTScope: null,
-              codeImportedSuccess: true
+              : imported.imported.value
+              currentScope.imports[realName] = {
+                realName: realName,
+                localName: imported.local.name, 
+                ASTScope: null,
+                codeImportedSuccess: false,
+                code: code,
+                getASTScopeFromCodeFn: () => {
+                  const ast = parse(code, {
+                    sourceType: "module",
+                    sourceFilename: importPath,
+                    plugins: [
+                      // enable jsx and flow syntax
+                      "jsx",
+                      "typescript",
+                    ],
+                  });
+                  const {scopes} = processASTIntoScopes(ast) // after this function, current function will be the top level Program of the imported file
+                  return scopes[0]?.getASTScope(realName) || null
+                }
+              }
+
+              importMissingScope.push(currentScope.imports[imported.imported.type === 'Identifier' 
+              ? imported.imported.name 
+              : imported.imported.value])
             }
+          })
 
-            importMissingScope.push(currentScope.imports[imported.imported.type === 'Identifier' 
-            ? imported.imported.name 
-            : imported.imported.value])
-          }
-        })
 
-        const ast = parse(code, {
-          sourceType: "module",
-          sourceFilename: importPath,
-          plugins: [
-            // enable jsx and flow syntax
-            "jsx",
-            "flow",
-          ],
-        });
-        processASTIntoScopes(ast) // after this function, current function will be the top level Program of the imported file
-        
-        importMissingScope.forEach(imported => {
-          imported.ASTScope = currentScope?.getASTScope(imported.realName) || null
-        })
+        }
       }
-    }
-    if (
-      path.node.leadingComments &&
-      path.node.leadingComments.length > 0 &&
-      path.node.leadingComments.some((line) => line.value.includes(trackVariableCommentTag))
-    ) {
-      const trackedLine = path.node.leadingComments.find((line) =>
-        line.value.includes(trackVariableCommentTag),
-      )?.value;
-      const trackedName = trackedLine?.split("=")[1];
-      if (trackedName) {
-        trackeds.push({ scope: path.scope, varName: trackedName });
-      }
-    }
-  
-    if (path.isVariableDeclaration()) {
-      variableDeclaration.push(path);
-      // detect tracked variables
       if (
         path.node.leadingComments &&
         path.node.leadingComments.length > 0 &&
-        path.node.leadingComments.some((line) => line.value === trackCommentTag)
+        path.node.leadingComments.some((line) => line.value.includes(trackVariableCommentTag))
       ) {
-        path.get("declarations").forEach((decl) => decl.setData("tracked", true));
+        const trackedLine = path.node.leadingComments.find((line) =>
+          line.value.includes(trackVariableCommentTag),
+        )?.value;
+        const trackedName = trackedLine?.split("=")[1];
+        if (trackedName) {
+          trackeds.push({ scope: path.scope, varName: trackedName });
+        }
+      }
+    
+      if (path.isVariableDeclaration()) {
+        variableDeclaration.push(path);
+        // detect tracked variables
+        if (
+          path.node.leadingComments &&
+          path.node.leadingComments.length > 0 &&
+          path.node.leadingComments.some((line) => line.value === trackCommentTag)
+        ) {
+          path.get("declarations").forEach((decl) => decl.setData("tracked", true));
+        }
+      }
+      if (path.isThisExpression()) {
+        const classScope = path
+          .findParent((parent) => parent.isClassDeclaration())
+          ?.scope?.getData("ASTScope");
+    
+        classScope.registerThisReference(path);
+      }
+      if(path.isExportDefaultDeclaration()) {
+        if (path.node.declaration.type === 'Identifier') {
+          const scope = scopes[0].getASTScope(path.node.declaration.name)
+          if(scope){
+            scope.defaultExported = true
+          }
+          
+        }
       }
     }
-  
-    if (path.isThisExpression()) {
-      const classScope = path
-        .findParent((parent) => parent.isClassDeclaration())
-        ?.scope?.getData("ASTScope");
-  
-      classScope.registerThisReference(path);
-    }
-  }
 
-  const processOnExitPath = (path: NodePath) => {
-    if (path.isScope()) {
-      currentScope = scopeQueue.pop();
+    const processOnExitPath = (path: NodePath) => {
+      if (path.isScope()) {
+        currentScope = scopeQueue.pop();
+      }
     }
-  }
-
-  const processASTIntoScopes = (ast: Node) => {
     traverse(ast, {
       enter(path) {
         processOnEnterPath(path)
@@ -1379,12 +1380,10 @@ export default async function dataDependencyTracker(codeToParseInput?: string, f
       _.processRecursivePhase();
       _.processGraphNodes();
     });
-
+    return {scopes, nodes, trackedVariables}
   }
 
-  processASTIntoScopes(ast)
-
-  
+  const {scopes, nodes, trackedVariables} = processASTIntoScopes(ast)
 
   const isClient = typeof window === "undefined" ? false : true;
   if (isClient) {

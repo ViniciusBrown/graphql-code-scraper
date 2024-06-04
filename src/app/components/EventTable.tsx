@@ -12,7 +12,7 @@ export default function EventsTable({trackedVars}: PropsType) {
     'to_var',
     'from_scope',
     'to_scope',
-		'complete_from_var',
+		'memberExpressionAsArray',
   ] as const
 
   return (
