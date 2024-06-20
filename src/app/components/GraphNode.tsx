@@ -15,6 +15,9 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Textarea } from '@/components/ui/textarea';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+
+import FragmentToggle from './FragmentToggle';
 
 const handleStyle = { top: 10 };
 
@@ -22,7 +25,7 @@ const padding = 10
 const margin = 4
 
 export type GraphNodeDataType = {
-	inputs: string[], outputs: string[], type: string, name: string, fragment: any
+	inputs: string[], outputs: string[], type: string, name: string, fragment: string, spreads: {[key: string]: string}
 }
 
 const getColor = (type: string, label: boolean) =>{
@@ -54,8 +57,9 @@ const getColor = (type: string, label: boolean) =>{
 }
 
 export default function CustomNode({ data, id }: {data: GraphNodeDataType, id: Node<any, string | undefined>['id']}) {
-  const { inputs, outputs, type, name, fragment } = data
+  const { inputs, outputs, type, name, fragment, spreads, contentObj } = data
 	// const labelHeight = document.getElementById('label')?.clientHeight || 0;
+	
 	const GetNode = () => {
 		return (
 			<div style={getColor(type, false)} className="rounded-md border-2 border-slate-300">
@@ -100,10 +104,15 @@ export default function CustomNode({ data, id }: {data: GraphNodeDataType, id: N
 									<TabsTrigger value="full_fragment">Full Fragment</TabsTrigger>
 								</TabsList>
 								<TabsContent value="full_fragment">
-									{fragment && (fragment.mergedValue) && <Textarea rows={20} key={name} value={fragment.mergedValue} readOnly />}
+									{fragment.split('\n').map(line => <pre key={line}>{line}</pre>)}
+									{/* <Textarea rows={20} key={name} value={fragment} readOnly /> */}
+									{/* {fragment && (fragment.mergedValue) && <Textarea rows={20} key={name} value={fragment.mergedValue} readOnly />} */}
 								</TabsContent>
 								<TabsContent value="spread_fragment">
-									{fragment && (fragment.scopeValue) && <Textarea rows={20} key={name} value={fragment.scopeValue+'\n\n'+fragment.fragmentsReferences.map(ref => ref.scopeValue).join('\n\n')} readOnly />}
+									<FragmentToggle contentObj={contentObj} spreads={spreads} fragmentName={name} />
+									{/* {fragment.split('\n').map(line => <pre key={line}>{line}</pre>)} */}
+									{/* {<Textarea rows={20} key={name} value={fragment} readOnly />} */}
+									{/* {fragment && (fragment.scopeValue) && <Textarea rows={20} key={name} value={fragment.scopeValue+'\n\n'+fragment.fragmentsReferences.map(ref => ref.scopeValue).join('\n\n')} readOnly />} */}
 								</TabsContent>
 							</Tabs>
 						</AlertDialogDescription>

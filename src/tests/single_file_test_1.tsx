@@ -85,10 +85,10 @@ export function trackedInsideFunction() {
 		JSXChildrenTest: 'jsx',
 		array: [{id: 0}],
 	}
-	const aff = {someVar: tracked_variable.unusedTestVar, otherVar: tracked_variable.testClassSentObj.testClassSubFieldObject}
-	const lol = aff.otherVar.ReferenceChangeSubFielded
-	//outerFunction1(tracked_variable)
-	//outerFunction2(tracked_variable)
+	const usage1 = {lol: tracked_variable.lolzz}
+	const usage2 = usage1.lol.isThisWorking
+	outerFunction1(tracked_variable)
+	outerFunction2(tracked_variable)
 	return (
 		<GenericReactClassComponent class_tracked_variable={tracked_variable.testClassSentObj}>{tracked_variable.JSXChildrenTest}</GenericReactClassComponent>
 	)

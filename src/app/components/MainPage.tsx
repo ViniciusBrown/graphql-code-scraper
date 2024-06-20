@@ -7,8 +7,10 @@ import { Textarea } from "@/components/ui/textarea";
 import React, {useEffect, useRef, useState} from "react";
 import { Edge, Node, useEdgesState, useNodesState } from "reactflow";
 import { readFileFromLocal } from "../actions/get_file_from_local";
-import dataDependencyTracker from "../server/utils/data_dependency_tracker";
+// import dataDependencyTracker from "../server/utils/data_dependency_tracker";
+import dataDependencyTracker from "../server/utils/tracker";
 import GraphFlow from "./GraphFlow";
+import { Fragment } from 'react/jsx-runtime';
 
 
 const codeFile = `function nestedFunctionTest(tracked_nested){
@@ -196,26 +198,22 @@ const MainPage: React.FC = () => {
 	const single_file = "single_file_test_1.tsx"
 	const import_file = "import_file_test_1.tsx"
 	const real_file = 'app/common/react/components/growth/smb/PromotedPinPreview/PromotedPinPreview.tsx'
-
 	const [file, setFile] = useState(single_file)
 	const [code, setCode] = useState('')
 	const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+	const [currentTab, setCurrentTab] = useState('Code')
 	// const [nodes, setNodes] = useState<Node[]>([])
 	// const [edges, setEdges] = useState<Edge[]>([])
 
 	const processOnFrontEnd = async (code: string) => {
-		console.log(folder)
-		console.log((folder || '') + (file || ''))
 		const data = await dataDependencyTracker(code, file, folder)
 		console.log(data)
 		if(data.length > 0){
-			setTrackedVariables(data)
-			setNodes(data[0].node.nodes)
-			setEdges(data[0].node.edges)
-			
+			setNodes(data[0].graph.nodes)
+			setEdges(data[0].graph.edges)
+			setCurrentTab("Graph")
 		}
-		
 	}
 
 	useEffect(() => {
@@ -230,22 +228,22 @@ const MainPage: React.FC = () => {
 			<Input type="email" placeholder="Project Folder Path" className="" value={folder} onChange={e => setFolder(e.target.value)} />
 			<Input type="email" placeholder="Scan File Path" value={file} onChange={e => {setFile(e.target.value)}} />
 
-			<Tabs defaultValue="Code" className="h-[500px]">
+			<Tabs defaultValue="Code" className="h-[500px]" value={currentTab} onValueChange={setCurrentTab}>
 				<TabsList>
 					<TabsTrigger value="Code">Code</TabsTrigger>
-					<TabsTrigger value="Fragments">Fragments</TabsTrigger>
+					{/* <TabsTrigger value="Fragments">Fragments</TabsTrigger> */}
 					<TabsTrigger value="Graph">Graph</TabsTrigger>
 				</TabsList>
 				<TabsContent value="Code">
 					<Textarea rows={20} id={'input-code'} placeholder={'Please insert the code you want to crawl'} value={code} onChange={e => {setCode(e.target.value)}} />
 				</TabsContent>
-				<TabsContent value="Fragments">
+				{/* <TabsContent value="Fragments">
 					<div>
 						{trackedVariables?.map(({fragment, name}) => 
 								<Textarea rows={20} key={name} value={fragment.mergedValue} readOnly />
 						)}
 					</div>
-				</TabsContent>
+				</TabsContent> */}
 				<TabsContent value="Graph">
 					<GraphFlow 
 						nodes={nodes} 

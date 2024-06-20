@@ -3,13 +3,17 @@
 import { parse } from "@babel/parser";
 import traverse, { Node, NodePath as NodePath, Scope } from "@babel/traverse";
 import {
+  CallExpression,
   File,
   Identifier,
+  JSXExpressionContainer,
   JSXOpeningElement,
   ObjectPattern,
   ObjectProperty,
   Program,
   ThisExpression,
+  VariableDeclaration,
+  VariableDeclarator,
 } from "@babel/types";
 import { globSync } from 'glob'
 import { readFileSync, lstatSync, existsSync } from "fs"
@@ -26,6 +30,13 @@ type EventType = {
   from_scope: string;
   to_scope: string;
   id?: string;
+  context: {
+    currentTrackFromMemberExpressionArray: string[];
+    addToNextTrackFromMemberExpressionArray: string[];
+    targetType?: string | null;
+    errorMessages?: string[];
+  };
+
 };
 
 type FragmentType = {
@@ -58,6 +69,25 @@ const getLastObj = (objToAdd: any, nextFields: string[][]) => {
     }
   });
 };
+
+const turnArrayIntoObject = (arrayOfArrays: string[][]) => {
+  const result: {[key: string]: any} = {}
+  arrayOfArrays.forEach((fields) => {
+    const fieldsCopy = [...fields];
+    if (fieldsCopy.length > 0) {
+      const firstField = fieldsCopy.shift();
+      if (firstField) {
+        result[firstField] = result[firstField] ? result[firstField] : {};
+        let currentField = result[firstField];
+        fieldsCopy.forEach((field) => {
+          currentField[field] = currentField[field] ? currentField[field] : {};
+          currentField = currentField[field];
+        });
+      }
+    }
+  });
+  return result
+}
 
 let id = -1
 const getNewId = () => {
@@ -103,6 +133,324 @@ class SubField {
     });
   }
 }
+
+
+class GenericGraphNode{
+  name: string;
+  type: "expression_reference" | "scope_change_reference" | "scope_change_rename" | "in_scope_reference" | "declaration";
+  inputs: GenericGraphNode[];
+  outputs:  GenericGraphNode[]
+  triggeredEvent?: EventType;
+  id: string
+
+  constructor(name: string, type: GenericGraphNode['type'], triggeredEvent?: EventType){
+    this.name = name
+    this.inputs = []
+    this.outputs = []
+    this.type = type
+    this.triggeredEvent = triggeredEvent
+    this.id = getNewId().toString()
+  }
+  
+  addOutputsFromArrayOfNames(names: string[], event?: EventType){
+    let currentNode: GenericGraphNode = this
+    while(names.length > 0){
+      const newNodeName = names.pop() as string
+      let newNode = currentNode.outputs.find(output => output.name === newNodeName)
+      if(!newNode){
+        newNode = currentNode.addOutputsAndInput(
+          newNodeName, 
+          "expression_reference",
+          event
+        )
+      }
+      currentNode = newNode
+    } 
+    return currentNode  
+  }
+  
+  addOutputsAndInput(name: string, type: typeof this.type, event?: EventType){
+    const newNode = new GenericGraphNode(name, type, event)
+    this.outputs.push(newNode)
+    newNode.inputs.push(this)
+    return newNode
+  }
+  addNodeToOutput(node: GenericGraphNode){
+    this.outputs.push(node)
+    node.inputs.push(this)
+  }
+  
+  traverse(onNodeEnter: (node: GenericGraphNode)=>void){
+    Object.values(this.outputs).forEach(output => {
+      onNodeEnter(output)
+      output.traverse(onNodeEnter)
+    })
+    
+  }
+  get reactFlowNode(){
+    return ({
+      id: this.id, 
+      type: "CustomNode", 
+      position: {x: 0, y: 0}, 
+      data: {
+        name: this.name, 
+        type: this.type,
+        inputs: [''],
+        outputs: [''],
+        fragment: '',
+        event: { ...this.triggeredEvent, to_obj: this.triggeredEvent?.to_obj?.name || "" }
+      }
+    })
+  }
+  get reactFlowEdges(){
+    const edges: Edge[] = []
+    let counter = 0
+    Object.values(this.outputs).forEach(output => {
+      edges.push({ 
+        id: `edge-${this.name}-to-${output.name}-${counter}`, 
+        //type: 'smoothstep',
+        source: this.id, 
+        target: output.id, 
+        sourceHandle: `in-0`,
+        targetHandle: `out-0`,
+      })
+      counter += 1
+    })
+    
+    return edges
+  }
+  getTraversedOutputsReactFlow(){
+    const nodes = [this.reactFlowNode]
+    const edges = [...this.reactFlowEdges]
+    this.traverse(
+      (node: GenericGraphNode) => {
+        nodes.push(node.reactFlowNode)
+        edges.push(...node.reactFlowEdges)
+      }
+    )
+    return {nodes, edges}
+  }
+}
+
+
+class GraphEventNode {
+  name: string;
+  originEvent: EventType;
+  events: EventType[];
+  eventNodes: GraphEventNode[];
+  contentObj: {[key: string]: any};
+  node: GenericGraphNode
+  contentArray: string[][]
+  fragment: { 
+    contentArray: { [key: string]: any; }; 
+    contentObj: { [key: string]: any; }; 
+    spreads: string[]
+  };
+  scopedGraph: any;
+
+  constructor(originEvent: EventType, events: EventType[]){
+    this.name = originEvent.to_var ||  originEvent.memberExpressionAsArray[originEvent.memberExpressionAsArray.length-1] || ''
+    this.originEvent = originEvent
+    this.events = events
+    this.eventNodes = []
+    this.contentObj = {[this.name]: {}}
+    this.node = new GenericGraphNode(this.name, originEvent.type, originEvent)
+    this.contentArray = this.originEvent.memberExpressionAsArray ? [this.originEvent.memberExpressionAsArray] : []
+    this.fragment = {
+      contentArray: {},
+      contentObj: {},
+      spreads: []
+    }
+
+    this.scopedGraph = {contentArray: []}
+    this.composeGraph()
+    this.traverse()
+    this.contentObj = turnArrayIntoObject(this.contentArray)
+    
+    
+  }
+  mutateEventToMatchNewReferencePathArray(event: EventType){
+    while(event.context?.currentTrackFromMemberExpressionArray.length > 0 && event.memberExpressionAsArray.length > 0){
+      if(event.context?.currentTrackFromMemberExpressionArray.shift() !== event.memberExpressionAsArray.shift()){
+        return null
+      }
+    }
+    return event
+  }
+  composeGraph(){
+    this.eventNodes = this.events.map(event => {
+      if(event.to_obj){
+        const _newEvents = ([...event.to_obj.getEventBus()].map(e => (
+          {...e, 
+            context: {
+              ...e.context, 
+              currentTrackFromMemberExpressionArray: [
+                ...event.context.currentTrackFromMemberExpressionArray,
+                ...event.context.addToNextTrackFromMemberExpressionArray,
+              ]
+            }
+          })
+        ))
+        const newEvents = _newEvents.flatMap(newEvent => {
+          const e = this.mutateEventToMatchNewReferencePathArray(newEvent)
+          return e ? [e] : []
+        })
+        return new GraphEventNode(event, newEvents)
+      } else {
+        return new GraphEventNode(event, [])
+      }
+    })
+  }
+  createContentArrayInTraverse(eventNode: GraphEventNode){
+    eventNode.contentArray.forEach(arr => this.contentArray.push([...(this.originEvent.memberExpressionAsArray || []), ...arr]))
+  }
+  createFragmentInTraverse(eventNode: GraphEventNode){
+    const event = eventNode.originEvent
+    if(!event) return
+    if(event.type === 'scope_change_reference') {
+      const vars = [...event.memberExpressionAsArray].reverse()
+      const lastVar = vars.shift()
+      
+      const searchResult_local = traverseContentObj(this.fragment.contentObj, vars)
+      searchResult_local[lastVar] = {...searchResult_local[lastVar], [`...${toObjFragment.name}`]: {}}
+      
+      const searchResult_scope = traverseContentObj(this.fragment.scopeContentObj, vars)
+      searchResult_scope[lastVar] = {...searchResult_scope[lastVar], [`...${toObjFragment.name}`]: {}}
+      
+      this.fragment.fragmentsReferences.push(toObjFragment)
+    } else if (event.type === 'in_scope_reference') {
+      const vars = [...event.memberExpressionAsArray].reverse()
+      event.to_var 
+      && toObjFragment.scopeContentObj[event.to_var] 
+      && Object.assign(
+          traverseContentObj(this.fragment.scopeContentObj, vars), 
+          JSON.parse(JSON.stringify(toObjFragment.scopeContentObj[event.to_var])
+          )
+        )
+      this.fragment.fragmentsReferences = [
+        ...this.fragment.fragmentsReferences,
+        ...toObjFragment.fragmentsReferences,
+      ];
+    }
+  }
+  separateContentArrayIntoScopes(eventNode: GraphEventNode){
+    if(eventNode.originEvent?.type === 'scope_change_reference'){
+      if(this.scopedGraph[eventNode.originEvent.to_scope]){
+        this.scopedGraph[eventNode.originEvent.to_scope] = {
+          ...this.scopedGraph[eventNode.originEvent.to_scope],
+          ...eventNode.scopedGraph,
+          contentArray: [
+            ...this.scopedGraph[eventNode.originEvent.to_scope].contentArray,
+            ...eventNode.scopedGraph.contentArray,
+            eventNode.originEvent.memberExpressionAsArray
+          ]
+        }
+      } else {
+        this.scopedGraph[eventNode.originEvent.to_scope] = {
+          ...eventNode.scopedGraph,
+          contentArray: [
+            ...eventNode.scopedGraph.contentArray,
+            eventNode.originEvent.memberExpressionAsArray
+          ]
+        }
+      }
+    } else if(eventNode.originEvent?.type === 'in_scope_reference'){
+      this.scopedGraph = {
+        ...this.scopedGraph,
+        ...eventNode.scopedGraph,
+        contentArray: [
+          ...this.scopedGraph.contentArray,
+          ...eventNode.scopedGraph.contentArray,
+          eventNode.originEvent.memberExpressionAsArray
+        ]
+      }
+    } else if(eventNode.originEvent?.type === 'expression_reference'){
+      this.scopedGraph.contentArray.push(eventNode.originEvent.memberExpressionAsArray)
+    }
+  }
+  createFlowGraphNode(eventNode: GraphEventNode){
+
+  }
+  traverse(){
+    const lastNode = this.registerEvent(this.originEvent)
+    
+    
+    this.eventNodes.forEach(eventNode => {
+      eventNode.traverse()
+      this.createContentArrayInTraverse(eventNode)
+      this.separateContentArrayIntoScopes(eventNode)
+      
+      if(eventNode.originEvent?.type === 'scope_change_reference'){
+        lastNode.addNodeToOutput(eventNode.node)
+      }  else if(eventNode.originEvent?.type === 'in_scope_reference'){
+        lastNode.addNodeToOutput(eventNode.node)
+      }  else if(eventNode.originEvent?.type === 'expression_reference'){
+        lastNode.addNodeToOutput(eventNode.node)
+      }
+
+    })
+    
+    
+  }
+  registerEvent(event: EventType){
+    if (event.type === "expression_reference") {
+      return this.registerExpressionReferenceEvent(event)
+    } else if (event.type === "scope_change_reference") {
+      return this.registerScopeChangeEvent(event)
+    } else if (event.type === "in_scope_reference") {
+      return this.registerAssignmentReferenceEvent(event)
+    }
+    return this.node
+  }
+  registerExpressionReferenceEvent(event: EventType){
+    const mutatableCompleteFromVar = [...event.memberExpressionAsArray].reverse()
+    mutatableCompleteFromVar.pop()
+    if(mutatableCompleteFromVar.length > 0){
+      const firstNode = new GenericGraphNode(mutatableCompleteFromVar.pop(), 'expression_reference', event)
+      this.node = firstNode
+      return firstNode.addOutputsFromArrayOfNames(mutatableCompleteFromVar, event)
+    }
+    return this.node
+  }
+  registerScopeChangeEvent(event: EventType){
+    const mutatableCompleteFromVar = [...event.memberExpressionAsArray].reverse()
+    mutatableCompleteFromVar.pop()
+    const newScopeName = event.to_scope
+    if(mutatableCompleteFromVar.length > 0){
+      const firstNode = new GenericGraphNode(mutatableCompleteFromVar.pop(), 'expression_reference', event)
+      const lastNode = firstNode.addOutputsFromArrayOfNames(mutatableCompleteFromVar, event)
+      const scopeChangeNode = lastNode
+      .addOutputsAndInput(newScopeName, "scope_change", event)
+      this.node = firstNode
+      return scopeChangeNode
+    } 
+    const firstNode = new GenericGraphNode(newScopeName, "scope_change", event)
+    this.node = firstNode
+    
+    return this.node
+    
+     
+  }
+  registerAssignmentReferenceEvent(event: EventType){
+    const mutatableCompleteFromVar = [...event.memberExpressionAsArray].reverse()
+    mutatableCompleteFromVar.pop()
+    const newVarName = event.to_var || ''
+    if(mutatableCompleteFromVar.length > 0){
+      const firstNode = new GenericGraphNode(mutatableCompleteFromVar.pop(), 'expression_reference', event)
+      const lastNode = firstNode
+      .addOutputsFromArrayOfNames(mutatableCompleteFromVar, event)
+      .addOutputsAndInput(newVarName, "reassignment_reference", event)
+      this.node = firstNode
+      return lastNode
+    } 
+
+    const firstNode = new GenericGraphNode(newVarName, "reassignment_reference", event)
+    this.node = firstNode
+    return this.node
+    
+  }
+}
+
 
 class GraphNode{
   name: string;
@@ -286,6 +634,7 @@ class ASTNode {
   scope: ASTScope;
   subfields: any; //{ [key: string]: SubField };
   typeEvents: { newArr: string[]; oldArr: string[]; finisher: NodePath; objectRef: any }[];
+  eventsGraphNode: GraphEventNode;
 
   constructor(
     path: NodePath,
@@ -340,83 +689,38 @@ class ASTNode {
       this.references.forEach((ref: NodePath<Node>) => {
         const originName = this.name;
         const memberExpressionStringArray = this.getMemberExpressionAsArray(ref);
-        while (
-          memberExpressionStringArray[0] === "props" ||
-          memberExpressionStringArray[0] === "this"
-        ) {
-          memberExpressionStringArray.shift();
-        }
-
-        /* if there was not an assigment neither a unpacking, just acknowledge it and add it bus
-        i.e const returnMock = tracked.trackNum.MadeUpVariable + 1, because of the +1, it wont detect
-        the variableDeclarator, and I guess it should not detect it. */
-        this.mapRawReferences(memberExpressionStringArray, originName);
+   
         // go back to check what type of node made this reference
         const rootMemberExpression = this.getRootOfMemberExpression(ref);
         const declarator = rootMemberExpression?.parentPath;
         if (!declarator || !rootMemberExpression) return;
 
-        let typeEvent = null;
-        ref.findParent((path) => {
-          if (path.parentPath?.isObjectExpression()) {
-            typeEvent = "objectExpression";
+        let registeredEvent = false
+        const currentTrackFromMemberExpressionArray: string[] = []
+        rootMemberExpression.find((path) => {
+          if(path.isObjectProperty()) {
+            path.node.key && 'name' in path.node.key && currentTrackFromMemberExpressionArray.push(path.node.key.name)
+          }
+          if (path.parentPath?.isVariableDeclarator()) {
+            /* If its declaring a variable, it means that its creating a new variable in memory 
+            to store a subfield of the tracked variable. In this case, store an InScopeChange event 
+            i.e: const z = tracked_variable.x.y , in case its an destructing (ObjectPattern) store it
+            along its declaration name i.e: const { y } = tracked_variable.x */
+            this.mapInScopeChanges(memberExpressionStringArray, currentTrackFromMemberExpressionArray, path.parentPath, originName, );
+            registeredEvent = true
             return true;
-          } else if (path.parentPath?.isCallExpression()) {
-            typeEvent = "callExpression";
-            return true;
-          } else if (path.parentPath?.isVariableDeclarator()) {
-            typeEvent = "variableDeclarator";
+          } else if ((path.parentPath?.isCallExpression() && path.key !== 'callee') || (path.parentPath?.isJSXExpressionContainer() && path.parentPath?.parentPath.isJSXAttribute())) {
+            this.mapScopeChanges(memberExpressionStringArray, currentTrackFromMemberExpressionArray, path, originName);
+            registeredEvent = true
             return true;
           }
           return false;
         });
-        if (typeEvent === "objectExpression" && memberExpressionStringArray.length > 0) {
-          // get the whole path to this field
-          const completeMemberExpressionAsArray: string[] = [];
-          const memberExpressionArrayCopy = [...memberExpressionStringArray];
-          if (memberExpressionArrayCopy[0] === this.name && !this.subfields[this.name])
-            memberExpressionArrayCopy.shift();
-          let objectRef = this.subfields[memberExpressionArrayCopy.shift() as string];
-          if (objectRef) {
-            while (memberExpressionArrayCopy.length > 0) {
-              objectRef = objectRef[memberExpressionArrayCopy.shift() as string];
-            }
-          }
-
-          rootMemberExpression.findParent((path) => {
-            if (path.isCallExpression() || path.isVariableDeclarator()) {
-              this.typeEvents.push({
-                newArr: completeMemberExpressionAsArray.reverse(),
-                oldArr: memberExpressionStringArray,
-                finisher: path,
-                objectRef: objectRef || null,
-              });
-
-              return true;
-            }
-            if (path.isObjectProperty() && !!path.node.key?.name) {
-              completeMemberExpressionAsArray.push(path.node.key.name);
-            }
-            return false;
-          });
-        }
-
-        if (declarator.isVariableDeclarator()) {
-          /* If its declaring a variable, it means that its creating a new variable in memory 
-					to store a subfield of the tracked variable. In this case, store an InScopeChange event 
-					i.e: const z = tracked_variable.x.y , in case its an destructing (ObjectPattern) store it
-					along its declaration name i.e: const { y } = tracked_variable.x */
-          this.mapInScopeChanges(memberExpressionStringArray, declarator, originName);
-        } else if (
-          (rootMemberExpression.key !== "callee" && declarator.isCallExpression()) ||
-          (declarator.isJSXExpressionContainer() && declarator.parentPath.isJSXAttribute())
-        ) {
-          this.mapScopeChanges(memberExpressionStringArray, rootMemberExpression, originName);
-          // if (declarator.parentPath.isVariableDeclarator()) {
-          //   this.mapInScopeChanges(memberExpressionStringArray, declarator.parentPath, originName);
-          // }
-        }
-        //console.log(memberExpressionStringArray);
+        /* if there was not an assigment neither a unpacking, just acknowledge it and add it bus
+        i.e const returnMock = tracked.trackNum.MadeUpVariable + 1, because of the +1, it wont detect
+        the variableDeclarator, and I guess it should not detect it. */
+        if(!registeredEvent) this.mapRawReferences(memberExpressionStringArray, originName)
+        
       });
       this.didEventBus = true;
       this.mergedEventBus = [...this.eventBus];
@@ -445,8 +749,27 @@ class ASTNode {
   }
   processRecursivePhase() {
     this.recursivelyGetDataDependencies();
-    //this.recursivelyGetFragments();
     this.recursivelyGetFragments();
+  }
+  getEventsGraph(){
+    const event: EventType = {
+        type: "declaration",
+        from_var: this.name,
+        to_var: this.name,
+        to_obj: null,
+        memberExpressionAsArray: [],
+        from_scope: this.scope.name,
+        to_scope: this.scope.name,
+        context: {
+          currentTrackFromMemberExpressionArray: []
+        }
+    }
+    const newEvents = this.eventBus.map(event => ({
+      ...event,
+      memberExpressionAsArray: event.memberExpressionAsArray.slice(1),
+    }))
+    
+    this.eventsGraphNode = new GraphEventNode(event, newEvents)
   }
   recursivelyGetFragments() {
     if (!this.didEventBus) {
@@ -463,7 +786,6 @@ class ASTNode {
     }
     if (!this.didFragmentRecursiveGet && this.fragment.contentObj) {
       this.eventBus.forEach((event) => {
-        
         const toObj = event.to_obj;
         if (toObj) {
           const toObjFragment = toObj.recursivelyGetFragments();
@@ -561,29 +883,26 @@ class ASTNode {
   }
   getMemberExpressionAsArray(node: NodePath): string[] {
     const names: string[] = [];
-    if (node.isIdentifier()) {
-      if (
-        node?.parentPath?.isMemberExpression() ||
-        node?.parentPath?.isOptionalMemberExpression()
-      ) {
-        const rootNode = node.findParent(
-          (node) =>
-            !node.parentPath?.isMemberExpression() &&
-            !node?.parentPath?.isOptionalMemberExpression(),
-        );
-        rootNode &&
-          rootNode.traverse({
-            enter(path) {
-              if(path.isIdentifier()) { 
-                names.push(path.node.name)
-              } else if (path.isStringLiteral()) { 
-                names.push(path.node.value)
-              }
-            },
-          });
-      } else {
-        names.push(node.node.name);
-      }
+    if (node.parentPath?.isMemberExpression() || node.parentPath?.isOptionalMemberExpression()) {
+      const rootNode = node.findParent(
+        (node) =>
+          !node.parentPath?.isMemberExpression() &&
+          !node?.parentPath?.isOptionalMemberExpression(),
+      );
+      rootNode &&
+        rootNode.traverse({
+          enter(path) {
+            if(path.isIdentifier()) { 
+              names.push(path.node.name)
+            } else if (path.isStringLiteral()) { 
+              names.push(path.node.value)
+            } else if (path.isThisExpression()) {
+              names.push('this')
+            }
+          },
+        });
+    } else {
+      'name' in node.node && typeof node.node.name === 'string' && names.push(node.node.name);
     }
     return names;
   }
@@ -624,16 +943,13 @@ class ASTNode {
     return [fieldNamesArray, returnedLeaves];
   }
   getRootOfMemberExpression(node: NodePath) {
-    if (node.isIdentifier() || node.isMemberExpression() || node.isOptionalMemberExpression()) {
-      return node.parentPath.isMemberExpression() || node.isOptionalMemberExpression()
-        ? node.findParent(
-            (node) =>
-              !node.parentPath?.isMemberExpression() &&
-              !node.parentPath?.isOptionalMemberExpression(),
-          )
-        : node;
-    }
-    return null;
+  return node.parentPath?.isMemberExpression() || node.parentPath?.isOptionalMemberExpression()
+    ? node.findParent(
+        (node) =>
+          !node.parentPath?.isMemberExpression() &&
+          !node.parentPath?.isOptionalMemberExpression(),
+      )
+    : node;
   }
   addEvent(event: EventType) {
     this.registerSubFieldsFromArray(event.memberExpressionAsArray);
@@ -650,7 +966,7 @@ class ASTNode {
     }
   }
   mapRawReferences(memberExpressionStringArray: string[], originName: string) {
-    const event = {
+    const event: EventType = {
       type: "expression_reference",
       from_var: originName,
       to_var: null,
@@ -658,6 +974,12 @@ class ASTNode {
       memberExpressionAsArray: memberExpressionStringArray,
       from_scope: this.path.scope.getData("name") || "",
       to_scope: this.path.scope.getData("name") || "",
+      context: {
+        addToNextTrackFromMemberExpressionArray: [],
+        currentTrackFromMemberExpressionArray: [],
+        targetType: null,
+        errorMessages: []
+      }
     };
     this.addEvent(event);
   }
@@ -678,46 +1000,50 @@ class ASTNode {
     });
   }
   mapInScopeChanges(
-    memberExpressionStringArray: string[],
-    declarator: NodePath,
-    originName: string,
-  ) {
+    memberExpressionStringArray: string[],  // this is the member expression used in the referece => const newVar = var.child.grandChild ===> memberExpressionStringArray = [var, child, grandChild]
+    objectExpressionUntilReference: string[], // in case of var wrapping => const newVar = {field: {subField: var.child.grandChild}} ===>  objectExpressionUntilReference = [field, subfield]
+    variableDeclaratorNode: NodePath<VariableDeclarator>, 
+    referencedVariableName: string,
+    //after changing reference, the true path to track would be objectExpressionUntilReference + memberExpressionStringArray => newVar + [field, subfield] = [var, child, grandChild]
+    // so, on each event in newVar, we will only track it if the memberExpressionStringArray = [field, subfield], we dont care about the other events
+  ){
     const membersExpressions: string[][] = [];
     const declarations: NodePath<Identifier | ObjectProperty>[] = [];
-    if (declarator.isVariableDeclarator()) {
-      const declaratorId = declarator.get("id");
-      if (declaratorId.isObjectPattern()) {
-        const [unwrapedNames, objectProperties] = this.getObjectPatternAsArray(declaratorId);
-        declarations.push(...objectProperties);
-        membersExpressions.push(...unwrapedNames.map((n) => memberExpressionStringArray.concat(n)));
-      } else if (declaratorId.isIdentifier()) {
-        membersExpressions.push(memberExpressionStringArray);
-        declarations.push(declaratorId);
-      }
+ 
+    const variableDeclaratorNodeId = variableDeclaratorNode.get("id");
+    // objectPattern in case we find something like ===> const {var, otherVar} = data
+    if (variableDeclaratorNodeId.isObjectPattern()) {
+      const [unwrapedNames, objectProperties] = this.getObjectPatternAsArray(variableDeclaratorNodeId);
+      declarations.push(...objectProperties);
+      membersExpressions.push(...unwrapedNames.map((n) => memberExpressionStringArray.concat(n)));
+    } else if (variableDeclaratorNodeId.isIdentifier()) {
+      membersExpressions.push(memberExpressionStringArray);
+      declarations.push(variableDeclaratorNodeId);
     }
 
     declarations.forEach((decl, i) => {
       const declaration = decl.isIdentifier() ? decl : decl.get("value");
       if (Array.isArray(declaration)) return;
       const declObj = decl.scope.getData("ASTScope").ASTNodes[declaration?.node?.name]; // decl.getData("ASTNode");
-
-      if (declObj) {
-        const event = {
-          type: "in_scope_reference",
-          from_var: originName,
-          to_var: declObj.name,
-          to_obj: declObj,
-          memberExpressionAsArray: membersExpressions[i],
-          from_scope: declObj.scope.name,
-          to_scope: declObj.scope.name,
-        };
-        this.addEvent(event);
-      } else {
-        console.log(`could not find object ${declaration?.node?.name}`);
-      }
+      const event: EventType = {
+        type: "in_scope_reference",
+        from_var: referencedVariableName,
+        to_var: declObj ? declObj.name : null,
+        to_obj: declObj,
+        memberExpressionAsArray: membersExpressions[i],
+        from_scope: this.scope.name,
+        to_scope: this.scope.name,
+        context: {
+          addToNextTrackFromMemberExpressionArray: objectExpressionUntilReference,
+          currentTrackFromMemberExpressionArray: [],
+          targetType: variableDeclaratorNode.parentPath.isVariableDeclaration() ? variableDeclaratorNode.parentPath.node.kind : null,
+          errorMessages: declObj ? [] : [`could not find object ${declaration.node.name}`]
+        }
+      };
+      this.addEvent(event);
     });
   }
-  mapScopeChanges(memberExpressionStringArray: string[], rootNode: NodePath, originName: string) {
+  mapScopeChanges(memberExpressionStringArray: string[], objectExpressionUntilReference: string[], rootNode: NodePath<Node>, originName: string) {
     const statement = rootNode.parentPath;
     if (!statement) return;
     const event: EventType = {
@@ -726,8 +1052,14 @@ class ASTNode {
       to_var: "",
       to_obj: null,
       memberExpressionAsArray: memberExpressionStringArray,
-      from_scope: rootNode.scope.getData("ASTScope").name || "",
+      from_scope: this.scope.name, //rootNode.scope.getData("ASTScope").name || "",
       to_scope: "",
+      context: {
+        addToNextTrackFromMemberExpressionArray: objectExpressionUntilReference,
+        currentTrackFromMemberExpressionArray: [],
+        targetType: null,
+        errorMessages: []
+      }
     };
     if (statement.isCallExpression()) {
       const rootKey = rootNode.key;
@@ -747,11 +1079,13 @@ class ASTNode {
           if (target.isIdentifier()) {
             event["to_var"] = target.node.name;
             event["to_obj"] = target.scope.getData("ASTScope").getASTNodeBinding(target.node.name);
+            event.context.targetType = "function"
             this.addEvent(event);
             return;
           }
         }
         event["to_var"] = `could not find scope ${toScope.node.name}`;
+        event.context?.errorMessages?.push(`could not find scope ${toScope.node.name}`)
         this.addEvent(event);
       }
     } else if (statement.isJSXExpressionContainer()) {
@@ -768,15 +1102,33 @@ class ASTNode {
         if (openingName) {
           const toScopeBinding = this.scope.getASTScope(openingName);
           if (toScopeBinding) {
+            const toObj = toScopeBinding.type === "ClassDeclaration" 
+            ? toScopeBinding.getASTNodeBinding('this') 
+            : (Array.isArray(toScopeBinding.path.get("params")) ? toScopeBinding.getASTNodeBinding(toScopeBinding.path.get("params")[0].node.name) : null)
             event["to_var"] = newName;
-            event["to_obj"] = toScopeBinding.getASTNodeBinding(newName);
+            event["to_obj"] = toObj
             event["to_scope"] = openingName;
+            event.context.targetType = toScopeBinding.type === "ClassDeclaration" ? "JSX_class" : "JSX_function"
+            event.context.addToNextTrackFromMemberExpressionArray = [
+              ...(toScopeBinding.type === "ClassDeclaration" ? ['this', 'props', newName] : [toObj?.name, newName]),
+              ...event.context.addToNextTrackFromMemberExpressionArray
+              
+            ]
             this.addEvent(event);
             return;
           }
         }
+        event["to_var"] = `could not find scope ${openingName}`;
+        event.context?.errorMessages?.push(`could not find scope ${openingName}`)
+        this.addEvent(event);
       }
     }
+  }
+  getEventBus(){
+    if (!this.didEventBus) {
+      this.firstProcessingPhase();
+    }
+    return this.eventBus
   }
   get eventBusJsonSafe() {
     return this.eventBus.map((event) => ({ ...event, to_obj: event?.to_obj?.name || "" }));
@@ -869,78 +1221,95 @@ class ASTScope {
     }
   }
   registerThisReference(ref: NodePath<ThisExpression>) {
+    // const parentExpression = ref.findParent(
+    //   (path) => !path.isMemberExpression() && !path.isOptionalMemberExpression(),
+    // );
+    // const rootExpression = ref.findParent(
+    //   (path) =>
+    //     !path.parentPath?.isMemberExpression() && !path.parentPath?.isOptionalMemberExpression(),
+    // );
+    // const thisExpressionParent = ref.parentPath;
+    // let pathToRegister: NodePath<Identifier> | null = null;
+    // if (!parentExpression || !rootExpression || !thisExpressionParent) return;
+    // // if the this usage is in the right side of a variable declaration...
+    // if (parentExpression.isVariableDeclarator()) {
+    //   //if key is init, it is a reference
+    //   if (rootExpression.key === "init") {
+    //     // register as reference the next var name after this or props
+    //     // i.e const some_var = this.props.tracked_var ---> this should mark a reference to tracked_var
+    //     // if its only a this and not a member expression, dont register anything --> i.e const some_var = this
+    //     // if its a member expression, only register if the property of that member expression is not props ---> const some_var = this.props
+    //     // if whats after this is props ----> i.e this.props ----> check if there is more after props
+    //     if (
+    //       (thisExpressionParent.isMemberExpression() ||
+    //         thisExpressionParent.isOptionalMemberExpression()) &&
+    //       (thisExpressionParent.get("property").node?.name !== "props" ||
+    //         (thisExpressionParent.get("property").node?.name === "props" &&
+    //           (thisExpressionParent.parentPath.isMemberExpression() ||
+    //             thisExpressionParent.parentPath.isOptionalMemberExpression())))
+    //     ) {
+    //       // if got here, means that its either something like const   some_var = this.props.tracked_var  OR  some_var = this.tracked_var
+    //       const property =
+    //         thisExpressionParent.get("property").node?.name === "props"
+    //           ? thisExpressionParent.parentPath.get("property")
+    //           : thisExpressionParent.get("property");
+    //       pathToRegister = !Array.isArray(property) && property.isIdentifier() ? property : null;
+    //     } else {
+    //       const declaratorId = parentExpression.get("id");
+    //       if (!Array.isArray(declaratorId)) {
+    //         if (declaratorId.isObjectPattern()) {
+    //           // if got here its either const { tracked_var } = this or this.props
+    //           // register as reference the var name after this or props, if there isnt, register the object destructured
+    //           // i.e const { tracked_var } = this.props ---> this should mark a reference to tracked_var
+    //           // i.e const { subField } = this.props.tracked_var ---> this should mark a reference only to tracked_var
+    //           pathToRegister = declaratorId.get("properties")[0].get("key");
+    //         }
+    //       }
+    //     }
+    //   }
+    // } else if (parentExpression.isAssignmentExpression()) {
+    //   // i.e  this.some_var = something ----> register as assignment only (or do nothing and register only on its reference)
+    // } else {
+    //   pathToRegister =
+    //     ref.parentPath.node.property.name !== "props"
+    //       ? ref.parentPath.get("property")
+    //       : ref?.parentPath?.parentPath?.get("property");
+    // }
+    // if (!pathToRegister || !pathToRegister.node) return;
+    
+    // if (pathToRegister.node.name && !this.ScopeReferencesAndAssignments.assignments[pathToRegister.node.name])
+    //   this.ScopeReferencesAndAssignments.assignments[pathToRegister.node.name] = pathToRegister;
+    // const owner = this.getRootOfMemberExpression(pathToRegister)?.parentPath;
+    // if (!owner?.isAssignmentExpression()) {
+    //   this.ScopeReferencesAndAssignments.references[pathToRegister.node.name] = this
+    //     .ScopeReferencesAndAssignments.references[pathToRegister.node.name]
+    //     ? [
+    //         ...this.ScopeReferencesAndAssignments.references[pathToRegister.node.name],
+    //         pathToRegister,
+    //       ]
+    //     : [pathToRegister];
+    // }
+
+    // this.ScopeReferencesAndAssignments.references[pathToRegister.node.name] = [
+    //   ...this.ScopeReferencesAndAssignments.references[pathToRegister.node.name],
+    //   ...pathToRegister.scope.bindings[pathToRegister.node.name]?.referencePaths || []
+    // ]
+
+    
     const parentExpression = ref.findParent(
       (path) => !path.isMemberExpression() && !path.isOptionalMemberExpression(),
     );
-    const rootExpression = ref.findParent(
-      (path) =>
-        !path.parentPath?.isMemberExpression() && !path.parentPath?.isOptionalMemberExpression(),
-    );
-    const thisExpressionParent = ref.parentPath;
-    let pathToRegister: NodePath<Identifier> | null = null;
-    if (!parentExpression || !rootExpression || !thisExpressionParent) return;
-    // if the this usage is in the right side of a variable declaration...
-    if (parentExpression.isVariableDeclarator()) {
-      //if key is init, it is a reference
-      if (rootExpression.key === "init") {
-        // register as reference the next var name after this or props
-        // i.e const some_var = this.props.tracked_var ---> this should mark a reference to tracked_var
-        // if its only a this and not a member expression, dont register anything --> i.e const some_var = this
-        // if its a member expression, only register if the property of that member expression is not props ---> const some_var = this.props
-        // if whats after this is props ----> i.e this.props ----> check if there is more after props
-        if (
-          (thisExpressionParent.isMemberExpression() ||
-            thisExpressionParent.isOptionalMemberExpression()) &&
-          (thisExpressionParent.get("property").node?.name !== "props" ||
-            (thisExpressionParent.get("property").node?.name === "props" &&
-              (thisExpressionParent.parentPath.isMemberExpression() ||
-                thisExpressionParent.parentPath.isOptionalMemberExpression())))
-        ) {
-          // if got here, means that its either something like const   some_var = this.props.tracked_var  OR  some_var = this.tracked_var
-          const property =
-            thisExpressionParent.get("property").node?.name === "props"
-              ? thisExpressionParent.parentPath.get("property")
-              : thisExpressionParent.get("property");
-          pathToRegister = !Array.isArray(property) && property.isIdentifier() ? property : null;
-        } else {
-          const declaratorId = parentExpression.get("id");
-          if (!Array.isArray(declaratorId)) {
-            if (declaratorId.isObjectPattern()) {
-              // if got here its either const { tracked_var } = this or this.props
-              // register as reference the var name after this or props, if there isnt, register the object destructured
-              // i.e const { tracked_var } = this.props ---> this should mark a reference to tracked_var
-              // i.e const { subField } = this.props.tracked_var ---> this should mark a reference only to tracked_var
-              pathToRegister = declaratorId.get("properties")[0].get("key");
-            }
-          }
-        }
-      }
-    } else if (parentExpression.isAssignmentExpression()) {
-      // i.e  this.some_var = something ----> register as assignment only (or do nothing and register only on its reference)
-    } else {
-      pathToRegister =
-        ref.parentPath.node.property.name !== "props"
-          ? ref.parentPath.get("property")
-          : ref?.parentPath?.parentPath?.get("property");
-    }
-    if (!pathToRegister || !pathToRegister.node) return;
-    
-    if (pathToRegister.node.name && !this.ScopeReferencesAndAssignments.assignments[pathToRegister.node.name])
-      this.ScopeReferencesAndAssignments.assignments[pathToRegister.node.name] = pathToRegister;
-    const owner = this.getRootOfMemberExpression(pathToRegister)?.parentPath;
-    if (!owner?.isAssignmentExpression()) {
-      this.ScopeReferencesAndAssignments.references[pathToRegister.node.name] = this
-        .ScopeReferencesAndAssignments.references[pathToRegister.node.name]
+    if(parentExpression){
+      if(!this.ScopeReferencesAndAssignments.assignments['this']) this.ScopeReferencesAndAssignments.assignments['this'] = ref;
+      this.ScopeReferencesAndAssignments.references['this'] = this
+        .ScopeReferencesAndAssignments.references['this']
         ? [
-            ...this.ScopeReferencesAndAssignments.references[pathToRegister.node.name],
-            pathToRegister,
+            ...this.ScopeReferencesAndAssignments.references['this'],
+            ref,
           ]
-        : [pathToRegister];
+        : [ref];
     }
-    this.ScopeReferencesAndAssignments.references[pathToRegister.node.name] = [
-      ...this.ScopeReferencesAndAssignments.references[pathToRegister.node.name],
-      ...pathToRegister.scope.bindings[pathToRegister.node.name]?.referencePaths || []
-    ]
+    
   }
   getASTNodeBinding(nodeName: string): ASTNode | null {
     let astNode: ASTNode | null = null;
@@ -998,26 +1367,26 @@ class ASTScope {
         .references[name]
         ? [...this.ScopeReferencesAndAssignments.references[name], ...bind.referencePaths]
         : bind.referencePaths;
-      if (name === "props") {
-        bind.referencePaths.forEach((ref) => {
-          // if its member expression i.e const some_var = props.tracked_var ----> register a reference to tracked_var
-          if (
-            ref.parentPath?.isMemberExpression() ||
-            ref.parentPath?.isOptionalMemberExpression()
-          ) {
-            const varRef = ref.parentPath.get("property");
-            const varRefName = varRef.node?.name || varRef.node?.value;
-            if (varRefName && typeof varRefName === "string") {
-              if (!this.ScopeReferencesAndAssignments.assignments[varRefName])
-                this.ScopeReferencesAndAssignments.assignments[varRefName] = varRef;
-              this.ScopeReferencesAndAssignments.references[varRefName] = this
-                .ScopeReferencesAndAssignments.references[varRefName]
-                ? [...this.ScopeReferencesAndAssignments.references[varRefName], varRef]
-                : [varRef];
-            }
-          }
-        });
-      }
+      // if (name === "props") {
+      //   bind.referencePaths.forEach((ref) => {
+      //     // if its member expression i.e const some_var = props.tracked_var ----> register a reference to tracked_var
+      //     if (
+      //       ref.parentPath?.isMemberExpression() ||
+      //       ref.parentPath?.isOptionalMemberExpression()
+      //     ) {
+      //       const varRef = ref.parentPath.get("property");
+      //       const varRefName = varRef.node?.name || varRef.node?.value;
+      //       if (varRefName && typeof varRefName === "string") {
+      //         if (!this.ScopeReferencesAndAssignments.assignments[varRefName])
+      //           this.ScopeReferencesAndAssignments.assignments[varRefName] = varRef;
+      //         this.ScopeReferencesAndAssignments.references[varRefName] = this
+      //           .ScopeReferencesAndAssignments.references[varRefName]
+      //           ? [...this.ScopeReferencesAndAssignments.references[varRefName], varRef]
+      //           : [varRef];
+      //       }
+      //     }
+      //   });
+      // }
     });
     Object.entries(this.ScopeReferencesAndAssignments.assignments).map(([name, path]) => {
       this.ASTNodes[name] = new ASTNode(
@@ -1377,8 +1746,9 @@ export default async function dataDependencyTracker(codeToParseInput?: string, f
     });
     trackedVariables.forEach((_) => {
       _.firstProcessingPhase();
-      _.processRecursivePhase();
-      _.processGraphNodes();
+      _.getEventsGraph()
+
+      
     });
     return {scopes, nodes, trackedVariables}
   }
@@ -1392,12 +1762,13 @@ export default async function dataDependencyTracker(codeToParseInput?: string, f
     console.log(scopes);
     console.log(trackedVariables);
   }
-  return trackedVariables.map(({ fragment, mergedEventBus, name, recursiveDataDependency, node }) => ({
+  return trackedVariables.map(({ fragment, mergedEventBus, name, recursiveDataDependency, node, eventsGraphNode }) => ({
     eventBus: mergedEventBus.map((e) => ({ ...e, to_obj: e?.to_obj?.name || "" })),
     fragment,
     name,
     recursiveDataDependency,
-    node: node.getTraversedOutputsReactFlow(),
+    //node: node.getTraversedOutputsReactFlow(),
+    newNode: eventsGraphNode.node.getTraversedOutputsReactFlow()
   }));
 
   // return allASTNodes
