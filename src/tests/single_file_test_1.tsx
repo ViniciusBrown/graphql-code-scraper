@@ -20,7 +20,7 @@ export function outerFunction2(tracked_two: { testFieldsString: any; testFieldsS
 	return null
 }
 
-function outerFunction1(tracked_one: { testFieldsString: any; testFieldsSubObject?: { testSubFieldNull: null; testSubFieldString: string; testSubFieldNumber: number; testSubFieldObject: { testGrandChildString: string } }; testFieldsNumber: any; unusedVariable?: boolean; testClassSentObj?: { testClassSubFieldString: string; testClassSubFieldBoolean: boolean; testClassSubFieldObject: { testClassGrandChildString: string } }; unusedTestVar?: string; JSXChildrenTest?: string }){
+function outerFunction1({ tracked_one }){
 	const usage1 = tracked_one.testFieldsNumber + 1
 	const usage2 = tracked_one.testFieldsString
 	return null
@@ -83,10 +83,13 @@ export function trackedInsideFunction() {
 		},
 		unusedTestVar: 'unused',
 		JSXChildrenTest: 'jsx',
-		array: [{id: 0}],
+		mappedVariable: [{testFieldMap1: 0, testFieldMap2: {subFieldMap2: ''}}],
 	}
 	const usage1 = {lol: tracked_variable.lolzz}
 	const usage2 = usage1.lol.isThisWorking
+	const usageMap1 = tracked_variable.mappedVariable.map(tracked => tracked.testFieldMap1)
+	const usageMap2 = tracked_variable.mappedVariable.map(({testFieldMap2}) => testFieldMap2.subFieldMap2)
+
 	outerFunction1(tracked_variable)
 	outerFunction2(tracked_variable)
 	return (

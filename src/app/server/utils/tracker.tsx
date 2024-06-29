@@ -23,6 +23,7 @@ const trackCommentTag = "track_this_variable";
 const trackVariableCommentTag = "track_variable=";
 
 const RESERVED_MEMBER_EXPRESSIONS = new Set(['length'])
+const RESERVED_ARRAY_FUNCTIONS = new Set(['map', 'flatMap', 'filter', 'forEach'])
 
 type EventType = {
   type: "expression_reference" |
@@ -86,11 +87,29 @@ const getEdgeNewId = () => {
   return edgeId.toString()
 }
 
+let scopeUID = 0
+const getScopeUID = () => {
+  scopeUID += 1
+  return scopeUID
+}
+
+let eventGraphUID = 0
+const getEventGraphUID = () => {
+  eventGraphUID += 1
+  return eventGraphUID
+}
+
 const generateEventId = (event: EventType) => {
+  // if(event.type === 'scope_change_reference' && !event.to_scope_obj.path.isArrowFunctionExpression()){
+  //   if(event.to_file && event.to_scope && Number.isInteger(event.context.paramPosition)){
+  //     return 'scope_change_reference-->file-->' + event.to_file 
+  //     + '-->scope-->' + event.to_scope 
+  //     + '-->param_position-->'+event.context.paramPosition?.toString() 
+  //     + '-->variables-->' + event.context.addToNextTrackFromMemberExpressionArray
+  //   }
   if(event.type === 'scope_change_reference'){
     if(event.to_file && event.to_scope && Number.isInteger(event.context.paramPosition)){
-      return 'scope_change_reference-->file-->' + event.to_file 
-      + '-->scope-->' + event.to_scope 
+      return 'scopeUID-->' + event.to_scope_obj.uid.toString() 
       + '-->param_position-->'+event.context.paramPosition?.toString() 
       + '-->variables-->' + event.context.addToNextTrackFromMemberExpressionArray
     }
@@ -105,6 +124,7 @@ const generateEventId = (event: EventType) => {
 }
 const eventNodes: {[key: string]: GraphEventNode} = {}
 const visitedNodes = new Set()
+const visitedForFragment = new Set()
 
 const processFragmentStringValue = (contentSet: Set<string>, name: string, fragmentType?: string) => {
   const contentObj = turnArrayIntoObject(Array.from(contentSet).map(memberExpression => memberExpression.includes('...') ? [memberExpression] : memberExpression.split('.')))
@@ -257,15 +277,20 @@ class GraphEventNode {
   scopedGraph: any;
   nextEventsNodes: GraphEventNode[]
   id: string;  
+  UID: number;
   traversed: boolean
   memberExpressionsForThisEvent: string[][]
   graphNodeInputs:  GenericGraphNode[]
   graphNodeOutputs: GenericGraphNode[]
   newGraphNode: GenericGraphNode
+  ancestry: Set<number>
 
-  constructor(event: EventType){
+  constructor(event: EventType, ancestry: Set<number>){
     this.traversed = false
     this.id = generateEventId(event)
+    this.UID = getEventGraphUID()
+    this.ancestry = new Set(ancestry)
+    this.ancestry.add(this.UID)
     if(this.id) eventNodes[this.id] = this
     this.event = event
     this.contentObj = {}
@@ -323,9 +348,12 @@ class GraphEventNode {
         const newId = generateEventId(newEvent)
         if(newId && !!eventNodes[newId]){
           newEvent.memberExpressionAsArray.length > 0 && eventNodes[newId].memberExpressionsForThisEvent.push(newEvent.memberExpressionAsArray)
-          return [eventNodes[newId]]
+          if(!this.ancestry.has(eventNodes[newId].UID)){
+            return [eventNodes[newId]]
+          }
+          return []
         }
-        return [new GraphEventNode(newEvent)]
+        return [new GraphEventNode(newEvent, this.ancestry)]
       }
       return []
     }) 
@@ -388,6 +416,7 @@ class GraphEventNode {
   }
   traverse(){
     if(!this.traversed){
+      this.traversed = true
       this.registerEvent(this.event)
       //this.createFragmentInTraverse()
       
@@ -395,7 +424,6 @@ class GraphEventNode {
         this.contentSet.add(memberExpression.join('.'))
         memberExpression.length > 0 && this.contentObjTest['paths_to_this_node'].add(memberExpression.join('.'))
       })
-      
       this.nextEventsNodes.forEach(eventNode => {
         eventNode.traverse()
 
@@ -416,36 +444,38 @@ class GraphEventNode {
           })
         })
       })
-      this.traversed = true
+      
     }
   }
   getFragment(){
     const spreads: {[key: string]: any} = {}
     const traverse = (eventNode: GraphEventNode, mutatableObj: {[key: string]: any}) => {
-      eventNode.nextEventsNodes.forEach(node => {
-        let currentObj = mutatableObj
-        node.memberExpressionsForThisEvent.forEach(memberExpression => {
-          currentObj = mutatableObj
-          memberExpression.forEach(name => {
-            currentObj[name] = currentObj[name] || {}
-            currentObj = currentObj[name]
-          })
-          if(node.event.type === 'scope_change_reference'){
-            const nextNodeSpread = node.getFragment()
-            if(Object.keys(nextNodeSpread).length > 0){
-              spreads[`...${node.event.to_scope}`] = spreads[`...${node.event.to_scope}`] ? {...spreads[`...${node.event.to_scope}`], ...nextNodeSpread} : nextNodeSpread
-              Object.keys(node.fragment.spreads).forEach(spread => {
-                spreads[spread] = spreads[spread] ? {...spreads[spread], ...node.fragment.spreads[spread]} : node.fragment.spreads[spread]
-              })
-              currentObj[`...${node.event.to_scope}`] = {}
+      if(!visitedForFragment.has(eventNode.UID)){
+        visitedForFragment.add(eventNode.UID)
+        eventNode.nextEventsNodes.forEach(node => {
+          let currentObj = mutatableObj
+          node.memberExpressionsForThisEvent.forEach(memberExpression => {
+            currentObj = mutatableObj
+            memberExpression.forEach(name => {
+              currentObj[name] = currentObj[name] || {}
+              currentObj = currentObj[name]
+            })
+            if(node.event.type === 'scope_change_reference'){
+              const nextNodeSpread = node.getFragment()
+              if(Object.keys(nextNodeSpread).length > 0){
+                spreads[`...${node.event.to_scope}`] = spreads[`...${node.event.to_scope}`] ? {...spreads[`...${node.event.to_scope}`], ...nextNodeSpread} : nextNodeSpread
+                Object.keys(node.fragment.spreads).forEach(spread => {
+                  spreads[spread] = spreads[spread] ? {...spreads[spread], ...node.fragment.spreads[spread]} : node.fragment.spreads[spread]
+                })
+                currentObj[`...${node.event.to_scope}`] = {}
+              }
+            } else {
+              traverse(node, currentObj)
             }
-          } else {
-            traverse(node, currentObj)
-          }
+          })
         })
-        
-        
-      })
+      }
+      
     }
     const mutatableObj = {}
     
@@ -569,6 +599,7 @@ class ASTScope {
   name: string;
   aliasName: string;
   type: string;
+  file: string;
   parent: ASTScope | null;
   ScopeReferencesAndAssignments: {
     references: { [key: string]: NodePath[] };
@@ -605,7 +636,11 @@ class ASTScope {
       this.path.parentPath.isVariableDeclarator()
     ) {
       this.name = this.path.parent.id?.name;
-    } else {
+    } else if( 
+      this.path.isArrowFunctionExpression()
+    ) {
+      this.name = 'ArrowFunction';
+    }else {
       this.name = this.path.node?.id?.name;
     }
     this.name = this.name || "Program";
@@ -748,9 +783,10 @@ class ASTScope {
     let registeredEvent = false
     const currentTrackFromMemberExpressionArray: string[] = []
 
-    rootMemberExpression.key === 'callee' && memberExpressionStringArray.pop()
+    const subFieldCallExpresison = rootMemberExpression.key === 'callee' ? memberExpressionStringArray.pop() : null
     //if(RESERVED_MEMBER_EXPRESSIONS.has(memberExpressionStringArray[memberExpressionStringArray.length-1])) memberExpressionStringArray.pop()
     rootMemberExpression.find((path) => {
+      if(path.key === 'body') return true
       if(path.parentPath?.isLogicalExpression()){
         if(path.parentPath.node.operator === '&&' && path.key === 'left'){
           return true
@@ -772,6 +808,11 @@ class ASTScope {
         scopeChangeEvent && events.push(scopeChangeEvent)
         registeredEvent = true
         return true;
+      } else if (path.parentPath?.isCallExpression() && path.key === 'callee' && subFieldCallExpresison && RESERVED_ARRAY_FUNCTIONS.has(subFieldCallExpresison)){
+        const arrayMapScopeChangeEvent = this.mapArrayLoopScopeChangeEvent(memberExpressionStringArray, currentTrackFromMemberExpressionArray, path, originName)
+        arrayMapScopeChangeEvent && events.push(arrayMapScopeChangeEvent)
+        registeredEvent = true
+        return true
       }
       return false;
     });
@@ -780,6 +821,85 @@ class ASTScope {
     the variableDeclarator, and I guess it should not detect it. */
     if(!registeredEvent && memberExpressionStringArray.length > 1) events.push(this.mapRawReferences(memberExpressionStringArray, originName))
     return events
+  }
+  mapArrayLoopScopeChangeEvent(
+    memberExpressionStringArray: string[], 
+    objectExpressionUntilReference: string[], 
+    rootNode: NodePath<Node>, 
+    originName: string
+  ){
+    const expression = rootNode.parentPath;
+    if (!expression) return;
+    if (expression.isCallExpression()) {
+      const args = expression.get("arguments");
+      const toFunction = args.length > 0 && (args[0].isArrowFunctionExpression() || args[0].isFunctionExpression()) ? args[0] : null
+      const params = toFunction && toFunction.get("params") && toFunction.get("params") ? toFunction.get("params") : null
+      if (toFunction && params && Array.isArray(params) && params.length > 0) {
+        const toASTScope: ASTScope = toFunction.scope.getData("ASTScope")
+        const target = params[0]
+        const event: EventType = {
+          type: "scope_change_reference",
+          from_var: originName,
+          to_var: target.node.name,
+          memberExpressionAsArray: memberExpressionStringArray,
+          from_scope: this.name,
+          to_scope: toASTScope.name,
+          from_file: this.file,
+          to_file: toASTScope.file,
+          from_scope_obj: this,
+          to_scope_obj: toASTScope,
+          context: {
+            addToNextTrackFromMemberExpressionArray: objectExpressionUntilReference,
+            currentTrackFromMemberExpressionArray: [],
+            targetType: "function",
+            paramPosition: 0
+          },
+          loadNextEvents: () => { 
+            if(target.isObjectPattern()){
+              const membersExpressions: string[][] = [];
+              const declarations: NodePath<Identifier | ObjectProperty>[] = [];
+
+              // objectPattern in case we find something like ===> const {var, otherVar} = data
+              const [unwrapedNames, objectProperties] = this.getObjectPatternAsArray(target);
+              declarations.push(...objectProperties);
+              membersExpressions.push(...unwrapedNames.map(n => [ memberExpressionStringArray[memberExpressionStringArray.length-1], ...n ]))
+            
+              const events: EventType[] = []
+              declarations.forEach((decl, i) => {
+                const to_var = decl.isIdentifier() ? decl.node?.name : decl.get("value")?.node?.name;
+                if(to_var && typeof to_var === 'string'){
+                  const event: EventType = {
+                    type: "in_scope_reference",
+                    from_var: originName,
+                    to_var: to_var,
+                    memberExpressionAsArray: membersExpressions[i],
+                    from_scope: this.name,
+                    to_scope: toASTScope.name,
+                    from_file: this.file,
+                    to_file: toASTScope.file,
+                    from_scope_obj: this,
+                    to_scope_obj: toASTScope,
+                    context: {
+                      addToNextTrackFromMemberExpressionArray: objectExpressionUntilReference,
+                      currentTrackFromMemberExpressionArray: [],
+                      targetType: 'ObjectPatternParam',
+                    },
+                    loadNextEvents: () => toASTScope.getEventsFromBinding(to_var)
+                  }
+                  events.push(event)
+                };
+              });
+              return events
+            } else if(target.isIdentifier()){
+              return toASTScope.getEventsFromBinding(target.node.name)
+            }
+            return []
+          }
+        }
+      
+        return event
+      }
+    }
   }
   mapInScopeChanges(
     memberExpressionStringArray: string[],  // this is the member expression used in the referece => const newVar = var.child.grandChild ===> memberExpressionStringArray = [var, child, grandChild]
@@ -868,28 +988,68 @@ class ASTScope {
         if (toASTScope && typeof rootKey === "number") {
           const params = toASTScope.path.get("params");
           const target = Array.isArray(params) ? params[rootKey] : params;
-          if (target.isIdentifier()) {
-            const event: EventType = {
-              type: "scope_change_reference",
-              from_var: originName,
-              to_var: target.node.name,
-              memberExpressionAsArray: memberExpressionStringArray,
-              from_scope: this.name,
-              to_scope: toASTScope.name,
-              from_file: this.file,
-              to_file: toASTScope.file,
-              from_scope_obj: this,
-              to_scope_obj: toASTScope,
-              context: {
-                addToNextTrackFromMemberExpressionArray: objectExpressionUntilReference,
-                currentTrackFromMemberExpressionArray: [],
-                targetType: "function",
-                paramPosition: rootKey
-              },
-              loadNextEvents: () => toASTScope.getEventsFromBinding(target.node.name)
+          const event: EventType = {
+            type: "scope_change_reference",
+            from_var: originName,
+            to_var: target.node.name,
+            memberExpressionAsArray: memberExpressionStringArray,
+            from_scope: this.name,
+            to_scope: toASTScope.name,
+            from_file: this.file,
+            to_file: toASTScope.file,
+            from_scope_obj: this,
+            to_scope_obj: toASTScope,
+            context: {
+              addToNextTrackFromMemberExpressionArray: objectExpressionUntilReference,
+              currentTrackFromMemberExpressionArray: [],
+              targetType: "function",
+              paramPosition: rootKey
+            },
+            loadNextEvents: () => { 
+              if(target.isObjectPattern()){
+                const membersExpressions: string[][] = [];
+                const declarations: NodePath<Identifier | ObjectProperty>[] = [];
+  
+                // objectPattern in case we find something like ===> const {var, otherVar} = data
+                const [unwrapedNames, objectProperties] = this.getObjectPatternAsArray(target);
+                declarations.push(...objectProperties);
+                membersExpressions.push(...unwrapedNames.map(n => [ memberExpressionStringArray[memberExpressionStringArray.length-1], ...n ]))
+              
+                const events: EventType[] = []
+                declarations.forEach((decl, i) => {
+                  const to_var = decl.isIdentifier() ? decl.node?.name : decl.get("value")?.node?.name;
+                  if(to_var && typeof to_var === 'string'){
+                    const event: EventType = {
+                      type: "in_scope_reference",
+                      from_var: originName,
+                      to_var: to_var,
+                      memberExpressionAsArray: membersExpressions[i],
+                      from_scope: this.name,
+                      to_scope: toASTScope.name,
+                      from_file: this.file,
+                      to_file: toASTScope.file,
+                      from_scope_obj: this,
+                      to_scope_obj: toASTScope,
+                      context: {
+                        addToNextTrackFromMemberExpressionArray: objectExpressionUntilReference,
+                        currentTrackFromMemberExpressionArray: [],
+                        targetType: 'ObjectPatternParam',
+                      },
+                      loadNextEvents: () => toASTScope.getEventsFromBinding(to_var)
+                    }
+                    events.push(event)
+                  };
+                });
+                return events
+              } else if(target.isIdentifier()){
+                return toASTScope.getEventsFromBinding(target.node.name)
+              }
+              return []
             }
-            return event;
+            //() => toASTScope.getEventsFromBinding(target.node.name)
           }
+          return event;
+          
         }
         // const event: EventType = {
         //   type: "scope_change_reference",
@@ -1038,7 +1198,7 @@ class ASTScope {
         },
         loadNextEvents: () => this.getEventsFromBinding(bindingName)
       }
-      this.graphs[bindingName] = new GraphEventNode(event)
+      this.graphs[bindingName] = new GraphEventNode(event, new Set())
       this.graphs[bindingName].traverse()
     }
 
@@ -1123,7 +1283,7 @@ export default async function dataDependencyTracker(codeToParseInput?: string, f
 
     const processOnEnterPath = (path: NodePath) => {
       if (path.isScope()) {
-        const newScope = new ASTScope(path.scope, scopes.length, scopeQueue[scopeQueue.length - 1]);
+        const newScope = new ASTScope(path.scope, getScopeUID(), scopeQueue[scopeQueue.length - 1]);
         scopes.push(newScope);
         scopeQueue.push(newScope);
         currentScope = newScope
@@ -1233,7 +1393,6 @@ export default async function dataDependencyTracker(codeToParseInput?: string, f
           if(scope){
             scope.defaultExported = true
           }
-          
         }
       }
     }
@@ -1271,7 +1430,7 @@ export default async function dataDependencyTracker(codeToParseInput?: string, f
     graph: graphs[varName].graphNodeInputs[0]?.getTraversedOutputsReactFlow(), //{nodes:[], edges:[]}
     contentArray: graphs[varName].contentSet,
     contentObj: graphs[varName].contentObjTest,
-    newGraphNode: graphs[varName].traverseContentObjAndCreateReactFlowGraph().getTraversedOutputsReactFlow(),
+    //newGraphNode: graphs[varName].traverseContentObjAndCreateReactFlowGraph().getTraversedOutputsReactFlow(),
     
     //node: node.getTraversedOutputsReactFlow(),
   }));
