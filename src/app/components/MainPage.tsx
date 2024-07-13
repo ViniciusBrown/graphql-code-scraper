@@ -197,7 +197,7 @@ const MainPage: React.FC = () => {
 	const [folder, setFolder ] = useState(real_folder)
 	const single_file = "single_file_test_1.tsx"
 	const import_file = "import_file_test_1.tsx"
-	const real_file = 'app/www/growth/news/NewsHub/ListItem/ListItem.tsx'
+	const real_file = 'app/common/react/components/growth/news/NewsHub/HeaderIcon/HeaderIcon.tsx'
 	const [file, setFile] = useState(real_file)
 	const [code, setCode] = useState('')
 	const [nodes, setNodes, onNodesChange] = useNodesState([]);

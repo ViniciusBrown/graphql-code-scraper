@@ -745,15 +745,17 @@ class ASTScope {
       rootNode &&
         rootNode.traverse({
           enter(path) {
+            
             if(keepAddingNames){
               if(path.isIdentifier()) {
-                if(!RESERVED_MEMBER_EXPRESSIONS.has(path.node.name) && !(path.parentPath.isMemberExpression() && path.parentPath.node.computed)) names.push(path.node.name)
+                if(!RESERVED_MEMBER_EXPRESSIONS.has(path.node.name)) names.push(path.node.name) // && !(path.parentPath.isMemberExpression() && path.parentPath.node.computed)) names.push(path.node.name)
                 else keepAddingNames = false
               } else if (path.isStringLiteral()) { 
                 if(!RESERVED_MEMBER_EXPRESSIONS.has(path.node.value)) names.push(path.node.value)
                 else keepAddingNames = false
               } else if (path.isThisExpression()) {
                 names.push('this')
+              } else if (path.isNumericLiteral()){
               }
             }
           },
@@ -1051,24 +1053,25 @@ class ASTScope {
           return event;
           
         }
-        // const event: EventType = {
-        //   type: "scope_change_reference",
-        //   from_var: originName,
-        //   to_var: `could not find scope ${toScope.node.name}`,
-        //   memberExpressionAsArray: memberExpressionStringArray,
-        //   from_scope: this.name,
-        //   to_scope: toScope.node.name,
-        //   from_file: this.file,
-        //   to_file: '',
-        //   context: {
-        //     addToNextTrackFromMemberExpressionArray: objectExpressionUntilReference,
-        //     currentTrackFromMemberExpressionArray: [],
-        //     targetType: "function",
-        //     errorMessages: [`could not find scope ${toScope.node.name}`],
-        //   },
-        //   loadNextEvents: () => []
-        // }
-        // return event;
+        return {
+          type: "scope_change_reference",
+          from_var: originName,
+          to_var: `could not find scope ${toScope.node.name}`,
+          memberExpressionAsArray: memberExpressionStringArray,
+          from_scope: this.name,
+          to_scope: toScope.node.name,
+          from_file: this.file,
+          to_file: '',
+          to_scope_obj: this,
+          from_scope_obj: this,
+          context: {
+            addToNextTrackFromMemberExpressionArray: objectExpressionUntilReference,
+            currentTrackFromMemberExpressionArray: [],
+            targetType: "function",
+            errorMessages: [`could not find scope ${toScope.node.name}`],
+          },
+          loadNextEvents: () => []
+        } as EventType
       }
     } else if (expression.isJSXExpressionContainer()) {
       const openingNode: NodePath<JSXOpeningElement> | null = rootNode.findParent((node) =>
@@ -1091,7 +1094,6 @@ class ASTScope {
             && 'name' in toASTScope.path.node.params[0]
             && typeof toASTScope.path.node.params[0].name === 'string'
             && toASTScope.path.node.params[0].name)) || ''
-
             const event: EventType = {
               type: "scope_change_reference",
               from_var: originName,
@@ -1112,28 +1114,76 @@ class ASTScope {
                 targetType: toASTScope.type === "ClassDeclaration" ? "JSX_class" : "JSX_function",
                 paramPosition: 0
               },
-              loadNextEvents: () => toASTScope.getEventsFromBinding(to_var)
+              loadNextEvents: () =>  { 
+                if(toASTScope.type === "ClassDeclaration") {
+                  return toASTScope.getEventsFromBinding('this')
+                } else {
+                  const params = toASTScope.path.get("params")
+                  const target = Array.isArray(params) ? params[0] : params;
+                  if(target.isObjectPattern()){
+                    const membersExpressions: string[][] = [];
+                    const declarations: NodePath<Identifier | ObjectProperty>[] = [];
+      
+                    // objectPattern in case we find something like ===> const {var, otherVar} = data
+                    const [unwrapedNames, objectProperties] = this.getObjectPatternAsArray(target);
+                    declarations.push(...objectProperties);
+                    membersExpressions.push(...unwrapedNames.map(n => [ memberExpressionStringArray[memberExpressionStringArray.length-1], ...n ]))
+                  
+                    const events: EventType[] = []
+                    declarations.forEach((decl, i) => {
+                      const to_var = decl.isIdentifier() ? decl.node?.name : decl.get("value")?.node?.name;
+                      if(to_var && typeof to_var === 'string'){
+                        const event: EventType = {
+                          type: "in_scope_reference",
+                          from_var: originName,
+                          to_var: to_var,
+                          memberExpressionAsArray: membersExpressions[i],
+                          from_scope: this.name,
+                          to_scope: toASTScope.name,
+                          from_file: this.file,
+                          to_file: toASTScope.file,
+                          from_scope_obj: this,
+                          to_scope_obj: toASTScope,
+                          context: {
+                            addToNextTrackFromMemberExpressionArray: objectExpressionUntilReference,
+                            currentTrackFromMemberExpressionArray: [],
+                            targetType: 'ObjectPatternParam',
+                          },
+                          loadNextEvents: () => toASTScope.getEventsFromBinding(to_var)
+                        }
+                        events.push(event)
+                      };
+                    });
+                    return events
+                  } else if(target.isIdentifier()){
+                    toASTScope.getEventsFromBinding(to_var)
+                  }
+                }
+                
+                return []
+              }
             }
             return event;
           }
-          // const event: EventType = {
-          //   type: "scope_change_reference",
-          //   from_var: originName,
-          //   to_var: `could not find scope ${openingName}`,
-          //   memberExpressionAsArray: memberExpressionStringArray,
-          //   from_scope: this.name,
-          //   to_scope: openingName,
-          //   from_file: this.file,
-          //   to_file: '',
-          //   context: {
-          //     addToNextTrackFromMemberExpressionArray: objectExpressionUntilReference,
-          //     currentTrackFromMemberExpressionArray: [],
-          //     targetType: "function",
-          //     errorMessages: [`could not find scope ${openingName}`],
-          //   },
-          //   loadNextEvents: () => []
-          // }
-          // return event;
+          return {
+            type: "scope_change_reference",
+            from_var: originName,
+            to_var: `could not find scope ${openingName}`,
+            memberExpressionAsArray: memberExpressionStringArray,
+            from_scope: this.name,
+            to_scope: openingName,
+            from_file: this.file,
+            to_file: '',
+            to_scope_obj: this,
+            from_scope_obj: this,
+            context: {
+              addToNextTrackFromMemberExpressionArray: objectExpressionUntilReference,
+              currentTrackFromMemberExpressionArray: [],
+              targetType: "function",
+              errorMessages: [`could not find scope ${openingName}`],
+            },
+            loadNextEvents: () => []
+          } as EventType
         }
       }
     }
