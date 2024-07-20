@@ -737,15 +737,17 @@ class ASTScope {
     const names: string[] = [];
     let keepAddingNames = true
     if (node.parentPath?.isMemberExpression() || node.parentPath?.isOptionalMemberExpression()) {
-      const rootNode = node.findParent(
-        (node) =>
-          !node.parentPath?.isMemberExpression() &&
-          !node?.parentPath?.isOptionalMemberExpression(),
+      const rootNode = node.find(
+        (node) =>{
+          (node.parentPath?.key !== 'callee' && (node.parentPath?.isMemberExpression() || node.parentPath?.isOptionalMemberExpression()) && console.log(node?.parentPath?.key, node?.parentPath?.type, node.key))
+          return (!node.parentPath?.isMemberExpression() &&
+          !node?.parentPath?.isOptionalMemberExpression()) ||  node.key === 'property'
+        }
+          
       );
       rootNode &&
         rootNode.traverse({
           enter(path) {
-            
             if(keepAddingNames){
               if(path.isIdentifier()) {
                 if(!RESERVED_MEMBER_EXPRESSIONS.has(path.node.name)) names.push(path.node.name) // && !(path.parentPath.isMemberExpression() && path.parentPath.node.computed)) names.push(path.node.name)
@@ -761,7 +763,7 @@ class ASTScope {
           },
         });
     } else {
-      'name' in node.node && typeof node.node.name === 'string' && names.push(node.node.name);
+      //'name' in node.node && typeof node.node.name === 'string' && names.push(node.node.name);
     }
     return names;
   }
