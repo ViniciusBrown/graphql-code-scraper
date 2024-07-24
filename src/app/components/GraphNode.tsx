@@ -98,7 +98,7 @@ export default function CustomNode({ data, id }: {data: GraphNodeDataType, id: N
 					<AlertDialogHeader>
 						<AlertDialogTitle>Fragment</AlertDialogTitle>
 						<AlertDialogDescription>
-							<Tabs defaultValue="spread_fragment" className="h-[500px]">
+							<Tabs defaultValue="spread_fragment" className=" w-[460px] h-[500px]">
 								<TabsList>
 									<TabsTrigger value="spread_fragment">Spread Fragment</TabsTrigger>
 									<TabsTrigger value="full_fragment">Full Fragment</TabsTrigger>

@@ -14,6 +14,13 @@ const processFragmentStringValue = (contentObj: {[key: string]: any}, name: stri
     .replace(/: {/g, " {");
 }
 
+const processFragmentAndSpreadsToStringValue = (contentObj: {[key: string]: any}, name: string, spreads: {[key: string]: any}, fragmentType?: string) => {
+  const untoggledSpreads: string[] = []
+  turnObjToArrayOfMemberExpressions(contentObj).forEach(line => line.forEach(variable => new Set(Object.keys(spreads)).has(variable) && untoggledSpreads.push(variable) ))
+  const result = processFragmentStringValue(contentObj, name, fragmentType)
+  return result + '\n\n' + untoggledSpreads.map(spread => processFragmentStringValue(spreads[spread], spread.slice(3))).join('\n\n')
+}
+
 const turnObjToArrayOfMemberExpressions = (obj: {[key: string]: any}): string[][] => {
   const traverse = (obj: {[key: string]: any}, currentMemberExpression: string[]): string[][] => {
     const returnArr: string[][] = []
@@ -92,11 +99,11 @@ export default function FragmentToggle({contentObj, spreads, fragmentName}: {con
   }
 
   return (
-    <div className='flex flex-col gap-1'>
-      <ScrollArea className="w-[460px] whitespace-nowrap rounded-md border">
+    <div className='flex flex-col gap-1 w-full'>
+      <ScrollArea className="whitespace-nowrap rounded-md border">
         <div className="flex w-max space-x-4 p-4">
           {Object.keys(spreads).map((spread) => (
-            <div className="overflow-hidden rounded-md">
+            <div className="overflow-hidden rounded-md" key={spread}>
               <Toggle onPressedChange={() => toggleFragment(spread)}>{spread}</Toggle>
             </div>
           ))}
@@ -105,7 +112,7 @@ export default function FragmentToggle({contentObj, spreads, fragmentName}: {con
       </ScrollArea>
       
       <div> 
-        {<Textarea rows={18} value={processFragmentStringValue(currentContentObj, fragmentName)} readOnly />}
+        {<Textarea rows={18} value={processFragmentAndSpreadsToStringValue(currentContentObj, fragmentName, spreads)} readOnly />}
       </div>
     </div>
    

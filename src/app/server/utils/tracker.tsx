@@ -147,6 +147,7 @@ const processFragmentStringValue2 = (contentObj: {[key: string]: any}, name: str
     .replace(/: {/g, " {");
 }
 
+
 class GenericGraphNode{
   name: string;
   type: "expression_reference" | "scope_change_reference" | "scope_change_rename" | "in_scope_reference" | "declaration";
@@ -156,6 +157,7 @@ class GenericGraphNode{
   id: string
   memberExpressions: string[][]
   graphEventNode: GraphEventNode
+  visited: boolean;
 
   constructor(name: string, type: GenericGraphNode['type'], graphEventNode: GraphEventNode, event?: EventType){
     this.name = name
@@ -260,6 +262,8 @@ class GenericGraphNode{
     return {nodes, edges}
   }
 }
+
+export type GenericGraphNodeType = typeof GenericGraphNode
 
 type ContentObject = {
   in_scope_references: {[key: string]: ContentObject}, 
@@ -743,7 +747,6 @@ class ASTScope {
           return (!node.parentPath?.isMemberExpression() &&
           !node?.parentPath?.isOptionalMemberExpression()) ||  node.key === 'property'
         }
-          
       );
       rootNode &&
         rootNode.traverse({

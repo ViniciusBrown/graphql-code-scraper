@@ -8,9 +8,10 @@ import React, {useEffect, useRef, useState} from "react";
 import { Edge, Node, useEdgesState, useNodesState } from "reactflow";
 import { readFileFromLocal } from "../actions/get_file_from_local";
 // import dataDependencyTracker from "../server/utils/data_dependency_tracker";
-import dataDependencyTracker from "../server/utils/tracker";
+import dataDependencyTracker, { GenericGraphNodeType } from "../server/utils/tracker";
 import GraphFlow from "./GraphFlow";
 import { Fragment } from 'react/jsx-runtime';
+import FragmentToggle from "./FragmentToggle";
 
 
 const codeFile = `function nestedFunctionTest(tracked_nested){
@@ -194,11 +195,11 @@ const MainPage: React.FC = () => {
   const [trackedVariables, setTrackedVariables] = useState([])
   const real_folder = '/home/vdemedeirosbrown/code/pinboard/webapp/'
 	const tests_folder = '/home/vdemedeirosbrown/code/graphql-code-scraper/src/tests/'
-	const [folder, setFolder ] = useState(real_folder)
+	const [folder, setFolder ] = useState(tests_folder)
 	const single_file = "single_file_test_1.tsx"
 	const import_file = "import_file_test_1.tsx"
 	const real_file = 'app/common/react/components/growth/news/NewsHub/HeaderIcon/HeaderIcon.tsx'
-	const [file, setFile] = useState(real_file)
+	const [file, setFile] = useState(single_file)
 	const [code, setCode] = useState('')
 	const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -231,19 +232,19 @@ const MainPage: React.FC = () => {
 			<Tabs defaultValue="Code" className="h-[500px]" value={currentTab} onValueChange={setCurrentTab}>
 				<TabsList>
 					<TabsTrigger value="Code">Code</TabsTrigger>
-					{/* <TabsTrigger value="Fragments">Fragments</TabsTrigger> */}
+					<TabsTrigger value="Fragments">Fragments</TabsTrigger>
 					<TabsTrigger value="Graph">Graph</TabsTrigger>
 				</TabsList>
 				<TabsContent value="Code">
 					<Textarea rows={20} id={'input-code'} placeholder={'Please insert the code you want to crawl'} value={code} onChange={e => {setCode(e.target.value)}} />
 				</TabsContent>
-				{/* <TabsContent value="Fragments">
+				<TabsContent value="Fragments">
 					<div>
-						{trackedVariables?.map(({fragment, name}) => 
-								<Textarea rows={20} key={name} value={fragment.mergedValue} readOnly />
-						)}
+						{nodes && nodes.length > 0 && !!nodes[0] && 
+								<FragmentToggle contentObj={nodes[0].data.contentObj} spreads={nodes[0].data.spreads} fragmentName={nodes[0].data.name} />
+						}
 					</div>
-				</TabsContent> */}
+				</TabsContent>
 				<TabsContent value="Graph">
 					<GraphFlow 
 						nodes={nodes} 
