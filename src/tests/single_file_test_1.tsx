@@ -20,7 +20,7 @@ export function outerFunction2(tracked_two: { testFieldsString: any; testFieldsS
 	return null
 }
 
-function outerFunction1({ tracked_one }){
+function outer_function1({ tracked_one }){
 	const usage1 = tracked_one.testFieldsNumber + 1
 	const usage2 = tracked_one.testFieldsString
 	return null
@@ -90,9 +90,9 @@ export function trackedInsideFunction() {
 	const usageMap1 = tracked_variable.mappedVariable.map(tracked => tracked.testFieldMap1)
 	const usageMap2 = tracked_variable.mappedVariable.map(({testFieldMap2}) => testFieldMap2.subFieldMap2)
 
-	outerFunction1(tracked_variable)
+	outer_function1(tracked_variable)
 	outerFunction2(tracked_variable)
 	return (
-		<GenericReactClassComponent class_tracked_variable={tracked_variable.testClassSentObj}>{tracked_variable.JSXChildrenTest}</GenericReactClassComponent>
+		<GenericReactClassComponent class_tracked_variable={tracked_variable.test_class_sent_obj.lol_in_snake_case.second_try_snake_case}>{tracked_variable.JSXChildrenTest}</GenericReactClassComponent>
 	)
 }

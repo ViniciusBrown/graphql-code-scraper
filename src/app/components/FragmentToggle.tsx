@@ -1,11 +1,26 @@
-import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible"
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { Toggle } from "@/components/ui/toggle";
 import { useRef, useState } from "react"
 
-const processFragmentStringValue = (contentObj: {[key: string]: any}, name: string, fragmentType?: string) => {
-  const fragmentContent: string = JSON.stringify({...contentObj}, null, 2) || "";
+type NestedObjectType = {[key: string]: NestedObjectType}
+
+const convertObjectSnakeCaseToCamelCase = (contentObj: NestedObjectType) => {
+  const snakeToCamel = (s: string) => s.replace(/(_\w)/g, k => k[1].toUpperCase())
+  const recursivelyCamelCaseObject = (data: NestedObjectType) => {
+    const results: NestedObjectType = {}
+    if(Object.keys(data).length > 0){
+      Object.keys(data).forEach(key => {
+        results[key.slice(0, 3).includes('...') ? key : snakeToCamel(key)] = recursivelyCamelCaseObject(data[key])
+      })
+    }
+    return results
+  }
+  return recursivelyCamelCaseObject(contentObj)
+}
+
+const processFragmentStringValue = (contentObj: NestedObjectType, name: string, fragmentType?: string) => {
+  const fragmentContent: string = JSON.stringify(convertObjectSnakeCaseToCamelCase({...contentObj}), null, 2) || "";
   const formatedFragmentContent = fragmentContent.substring(1, fragmentContent.length - 1);
   return `fragment ${name} on ${fragmentType || 'fragmentType'} {${formatedFragmentContent}}`
     .replace(/: {}/g, "")
@@ -14,15 +29,15 @@ const processFragmentStringValue = (contentObj: {[key: string]: any}, name: stri
     .replace(/: {/g, " {");
 }
 
-const processFragmentAndSpreadsToStringValue = (contentObj: {[key: string]: any}, name: string, spreads: {[key: string]: any}, fragmentType?: string) => {
+const processFragmentAndSpreadsToStringValue = (contentObj: NestedObjectType, name: string, spreads: NestedObjectType, fragmentType?: string) => {
   const untoggledSpreads: string[] = []
   turnObjToArrayOfMemberExpressions(contentObj).forEach(line => line.forEach(variable => new Set(Object.keys(spreads)).has(variable) && untoggledSpreads.push(variable) ))
   const result = processFragmentStringValue(contentObj, name, fragmentType)
   return result + '\n\n' + untoggledSpreads.map(spread => processFragmentStringValue(spreads[spread], spread.slice(3))).join('\n\n')
 }
 
-const turnObjToArrayOfMemberExpressions = (obj: {[key: string]: any}): string[][] => {
-  const traverse = (obj: {[key: string]: any}, currentMemberExpression: string[]): string[][] => {
+const turnObjToArrayOfMemberExpressions = (obj: NestedObjectType): string[][] => {
+  const traverse = (obj: NestedObjectType, currentMemberExpression: string[]): string[][] => {
     const returnArr: string[][] = []
     if(Object.keys(obj).length > 0){
       Object.keys(obj).forEach(key => returnArr.push(...traverse(obj[key], [...currentMemberExpression, key])))
@@ -37,7 +52,7 @@ const turnObjToArrayOfMemberExpressions = (obj: {[key: string]: any}): string[][
 }
 
 const turnArrayIntoObject = (arrayOfArrays: string[][]) => {
-  const result: {[key: string]: any} = {}
+  const result: NestedObjectType = {}
   arrayOfArrays.forEach((fields) => {
     const fieldsCopy = [...fields];
     if (fieldsCopy.length > 0) {
@@ -55,7 +70,7 @@ const turnArrayIntoObject = (arrayOfArrays: string[][]) => {
   return result
 }
 
-const exchanceFragmentSpreadForFragmentValue = (obj: {[key: string]: any}, spreadNames: Set<string>, spreads: {[key: string]: any}) => {
+const exchanceFragmentSpreadForFragmentValue = (obj: NestedObjectType, spreadNames: Set<string>, spreads: NestedObjectType) => {
   const mutatableSpreadNames = new Set(spreadNames)
   let resultArr: string[][] = turnObjToArrayOfMemberExpressions(obj)
   let loop = true
@@ -87,7 +102,7 @@ const exchanceFragmentSpreadForFragmentValue = (obj: {[key: string]: any}, sprea
   return turnArrayIntoObject(resultArr)
 }
 
-export default function FragmentToggle({contentObj, spreads, fragmentName}: {contentObj: {[key: string]: any}, spreads: {[key: string]: any}, fragmentName: string}){
+export default function FragmentToggle({contentObj, spreads, fragmentName}: {contentObj: NestedObjectType, spreads: NestedObjectType, fragmentName: string}){
   const initialContentObj = useRef(contentObj)
   const toggledSpreads = useRef<Set<string>>(new Set())
   const [currentContentObj, setCurrentContentObj] = useState(contentObj)
