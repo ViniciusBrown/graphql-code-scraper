@@ -213,7 +213,7 @@ const MainPage: React.FC = () => {
 		if(data.length > 0){
 			setNodes(data[0].graph.nodes)
 			setEdges(data[0].graph.edges)
-			setCurrentTab("Graph")
+			setCurrentTab("Fragments")
 		}
 	}
 

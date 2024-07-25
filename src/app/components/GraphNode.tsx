@@ -25,7 +25,13 @@ const padding = 10
 const margin = 4
 
 export type GraphNodeDataType = {
-	inputs: string[], outputs: string[], type: string, name: string, fragment: string, spreads: {[key: string]: string}
+	inputs: string[], 
+	outputs: string[], 
+	type: string, 
+	name: string, 
+	fragment: string, 
+	spreads: {[key: string]: any}
+	contentObj: {[key: string]: any} 
 }
 
 const getColor = (type: string, label: boolean) =>{
